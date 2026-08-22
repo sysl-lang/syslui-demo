@@ -19,10 +19,9 @@ import sh.sysl.sdl3.{Color, Renderer, Texture, Window, rgb, init, create_window,
                      SCANCODE_SPACE, WINDOW_HIDDEN}
 import sh.sysl.sdl3.rect as sdl_rect
 import sh.sysl.sdl3_ttf.{ttf_init, open_font, Font}
-import sysl.buf.{Buf, buf}
 import sysl.container.{Map, map}
 import sysl.fs.is_file
-import sysl.seq.Sequence
+import sysl.seq.{Sequence, generate}
 import sysl.text.parse_int
 
 // The counting allocator `package.hocon` names. Every box the program makes passes through it.
@@ -137,14 +136,8 @@ end font_path
 // The rows, built once and kept, so that a rebuild is priced on the tree and not on string
 // formatting. A real application's rows come out of a model and this is what standing in for one
 // looks like.
-labels(n: int) -> Buf[string]
-    var out: Buf[string] = buf()
-
-    for i in 0..<n
-        out.push(s"row ${i}  --  a line of text long enough to measure")
-
-    out
-end labels
+labels(n: int) -> []string =
+    generate(usize(n), i -> s"row ${i}  --  a line of text long enough to measure")
 
 // The whole screen, rebuilt from scratch every time anything changes.
 //
@@ -268,7 +261,6 @@ main(args: []string) -> Result[unit, string]
     val count = signal(0)
     val offset = signal(0)
     val rows = labels(n)
-    val v = rows.view()
 
     // The tree is rebuilt on the frame after anything it read changed, which is what makes this a
     // measurement of a rebuild rather than of a repaint. **The dependent is held by this frame, not
@@ -283,11 +275,11 @@ main(args: []string) -> Result[unit, string]
     if bench
         print(s"${n} rows, ${nodes(n)} boxed nodes")
 
-        val (bns, ba) = build_cost(count, offset, v, 200)
+        val (bns, ba) = build_cost(count, offset, rows, 200)
 
         report("rebuild        ", bns, ba, nodes(n))
 
-        val (fns, fa) = frame_cost(&c, count, offset, v, 200)
+        val (fns, fa) = frame_cost(&c, count, offset, rows, 200)
 
         report("rebuild + frame", fns, fa, nodes(n))
 
@@ -297,7 +289,7 @@ main(args: []string) -> Result[unit, string]
 
     renderer.set_vsync(true)
 
-    var tree = screen(count, offset, v)
+    var tree = screen(count, offset, rows)
     var running = true
     var rebuilds = 0
     var rebuild_ns = 0u64
@@ -321,7 +313,7 @@ main(args: []string) -> Result[unit, string]
         if dirty.read()
             val t0 = ticks_ns()
 
-            tree = screen(count, offset, v)
+            tree = screen(count, offset, rows)
 
             rebuild_ns += ticks_ns() - t0
             rebuilds += 1

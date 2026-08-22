@@ -23,19 +23,21 @@ real allocation traffic rather than a model of it.
 
 | rows | boxed nodes | rebuild | + layout and paint | allocations a rebuild |
 |---:|---:|---:|---:|---:|
-| 30 | 74 | 2.1 µs | 10.8 µs | 91 |
-| 300 | 614 | 13.5 µs | 114.5 µs | 631 |
-| 3000 | 6014 | 124.1 µs | 1400.8 µs | 6031 |
+| 30 | 74 | 2.1 µs | 10.6 µs | 89 |
+| 300 | 614 | 13.2 µs | 117.5 µs | 629 |
+| 3000 | 6014 | 127.4 µs | 1398.6 µs | 6029 |
 
-Linear in the node count, **one allocation a node and no more**, and about 22 ns a node to rebuild.
-The largest of those is 0.75% of a 60 Hz frame to rebuild and 8.4% to rebuild, lay out and paint.
+Linear in the node count, **one allocation a node and no more**, and about 21 ns a node to rebuild.
+The largest of those is 0.76% of a 60 Hz frame to rebuild and 8.4% to rebuild, lay out and paint.
 
-The table moved once since it was first taken, and by a little: the rows are produced by `sysl.seq`'s
-`map` and a container takes its children with one `extend` rather than a `push` a child, so a rebuild
-grows its storage once instead of doubling its way up. Measured against the older shape on the same
-machine and the same compiler, seven runs each, 300 rows went from a median 16.8 µs and 641
-allocations to 13.5 µs and 631. **The allocations that went are the reallocations**, and the one a
-node is what remains.
+The table moved once since it was first taken, and three things moved it. The rows are produced by
+`sysl.seq`'s `map`, which is given the length its answer will have, so a rebuild grows its storage
+once instead of doubling its way up; a container takes its children with one `extend` rather than a
+`push` a child, for the same reason; and `map` itself stopped computing its first element twice,
+which is worth two allocations a rebuild here because the first row is a `Text` and a `Padding`.
+Measured against the older shape on the same machine and the same compiler, 300 rows went from a
+median 16.8 µs and 641 allocations to 13.2 µs and 629. **What went are the reallocations and one
+duplicated element**, and the one allocation a node is what remains.
 
 ## What a person driving it costs, which the batch numbers hide
 
