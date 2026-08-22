@@ -1,0 +1,40 @@
+// syslUI's demo, and the program that answered card 0203's fourth question.
+//
+// **It is a demo and a benchmark in one, which is why it is kept rather than thrown away.** `--bench
+// <rows>` runs the whole thing against SDL's dummy video driver and prints what a rebuild costs;
+// with no arguments it opens a window with a counter and a scrolling list in it. The first is what a
+// machine can check and the second is what a person can click, and neither is a good substitute for
+// the other.
+//
+// The package it demonstrates is `sysl-lang/syslui`. Until both are public that is reached with
+// `--lib`, not by coordinate:
+//
+//     sysl build . --lib ../syslui
+//
+// **The compiler floor is syslui's**, and is stated there rather than here: the tree below is
+// written as an indented block, which landed on the compiler's `dev` after 0.0.65 was stamped.
+
+package {
+  name    = "syslui-demo"
+  version = "0.0.1"
+}
+
+dependencies {
+  sdl3     { git = "github.com/sysl-lang/sdl3",     version = "0.2.6" }
+  sdl3-ttf { git = "github.com/sysl-lang/sdl3-ttf", version = "0.2.1" }
+}
+
+requires {
+  os    = true
+  posix = true
+  heap  = true
+}
+
+// **Every allocation the program makes goes through a counter**, which is what turns "a rebuild
+// feels fine" into a number. `packages.md § 13` says the pair is a fact about the software a program
+// is built on rather than about the machine, and that is exactly the licence a measurement needs:
+// libc's `malloc` with a `++` in front of it is still libc's heap.
+allocator {
+  alloc = "ui_alloc"
+  free  = "ui_free"
+}

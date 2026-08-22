@@ -1,0 +1,348 @@
+// Card 0203, question 4: what does a rebuild cost under ARC?
+//
+// The other five questions were answered against a recorder that drew nothing, which is why they
+// are unit tests in the package. This one is about a real frame: a tree of a few hundred boxed
+// nodes thrown away and built again, laid out against a real font and drawn through a real
+// renderer, sixty times a second. What comes out is two numbers -- how long a rebuild takes and how
+// many allocations it makes -- and they are what decide whether the per-frame arena the mobile
+// survey argued for becomes a card or stays refused.
+//
+// **The text cache is not an optimization here, it is the difference between measuring the right
+// thing and the wrong one.** Rasterizing a glyph run is a shaping pass and a texture upload, and a
+// loop that did it per row per frame would report SDL's cost as syslUI's. Both the measurement and
+// the texture are remembered by the canvas, which is what `androidkit/main.sysl:118` hoists by hand
+// and what a framework would do for you.
+
+import sh.sysl.ui.*
+import sh.sysl.sdl3.{Color, Renderer, Texture, Window, rgb, init, create_window, poll_event,
+                     Event, EventKind, ticks_ns, error, set_hint}
+import sh.sysl.sdl3.rect as sdl_rect
+import sh.sysl.sdl3_ttf.{ttf_init, open_font, Font}
+import sh.sysl.sdl3.c.{INIT_VIDEO, SCANCODE_ESCAPE, SCANCODE_SPACE, WINDOW_HIDDEN}
+import sysl.buf.{Buf, buf}
+import sysl.container.map.{Map, map}
+import sysl.fs.is_file
+import sysl.text.parse_int
+
+// The counting allocator `package.hocon` names. Every box the program makes passes through it.
+extern "ui_allocs" allocs() -> u64
+extern "ui_frees" frees() -> u64
+
+const WIDTH: i32 = 900
+const HEIGHT: i32 = 620
+
+// Enough rows that a rebuild is a real walk rather than a rounding error, and few enough that the
+// list is still something a person could scroll to the end of.
+const ROWS: int = 300
+
+const INK: u32 = 0xE6E8EFu32
+const GROUND: u32 = 0x12141Cu32
+const PANEL: u32 = 0x1C2030u32
+const ACCENT: u32 = 0x3A6EA5u32
+
+// A canvas that draws into a window, measures in a real font, and remembers both.
+struct SdlCanvas
+    renderer: &Renderer
+    font: &Font
+
+    // A glyph run rasterized once and kept. **This is the cache card 0203 warned the probe not to
+    // do without** -- a frame loop that re-rasterizes is fast at nothing and would report SDL's
+    // cost as the tree's.
+    glyphs: Map[string, &Texture]
+
+    // The same run measured once and kept, which matters more than the texture: layout asks for a
+    // width during `measure` and again for every container that places the row.
+    widths: Map[string, int]
+
+    line_h: int
+    taps: Hits
+
+    // The texture for a run, made on the first frame that asks for it.
+    private glyph(*self, t: string) -> Option[&Texture]
+        self.glyphs.get(t) match
+            Some(tex) -> Some(tex)
+            None ->
+                self.font.texture(self.renderer, t, rgb(230, 232, 239)) match
+                    Some(tex) ->
+                        self.glyphs.put(t, tex)
+
+                        Some(tex)
+                    None -> None
+    end glyph
+end SdlCanvas
+
+impl Canvas for SdlCanvas
+    fill(*self, r: Rect, color: u32)
+        self.renderer.set_draw_color(rgb(u8((color >> 16) & 0xFF), u8((color >> 8) & 0xFF),
+                                         u8(color & 0xFF)))
+        self.renderer.fill_rect(f32(r.x), f32(r.y), f32(r.w), f32(r.h))
+    end fill
+
+    text(*self, r: Rect, t: string)
+        self.glyph(t) match
+            Some(tex) -> self.renderer.copy_at(tex, f32(r.x), f32(r.y))
+            None -> ()
+    end text
+
+    clip(*self, r: Rect)
+        self.renderer.set_clip_rect(sdl_rect(i32(r.x), i32(r.y), i32(r.w), i32(r.h)))
+
+    unclip(*self)
+        self.renderer.reset_clip_rect()
+
+    text_size(*self, s: string) -> Size
+        self.widths.get(s) match
+            Some(w) -> Size(w, self.line_h)
+            None ->
+                val (w, _) = self.font.measure(s)
+
+                self.widths.put(s, w)
+
+                Size(w, self.line_h)
+    end text_size
+
+    hit(*self, r: Rect, f: &Fn() -> unit)
+        self.taps.add(r, f)
+end SdlCanvas
+
+// A font the machine already has, checked rather than hard-coded.
+font_path() -> string
+    val candidates = [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+    ]
+
+    for i in 0..<candidates.len
+        if is_file(candidates[i]) then return candidates[i]
+
+    ""
+end font_path
+
+// ## The two programs the card asks for, as one screen
+//
+// The counter is the smallest thing that exercises the whole loop -- build, lay out, paint, take a
+// tap, write a signal, rebuild. The list is the smallest thing that exercises what the counter
+// cannot: clipping, state that outlives a rebuild, and enough nodes for the churn to be felt.
+//
+// **They share a tree**, because what is being measured is a rebuild, and a rebuild is of the whole
+// thing. A framework that rebuilt only the subtree that read the signal is precisely what fine-
+// grained reactivity would buy later; this probe deliberately does not, so the number it reports is
+// the worst case rather than the best.
+
+// The rows, built once and kept, so that a rebuild is priced on the tree and not on string
+// formatting. A real application's rows come out of a model and this is what standing in for one
+// looks like.
+labels(n: int) -> Buf[string]
+    var out: Buf[string] = buf()
+
+    for i in 0..<n
+        out.push(s"row ${i}  --  a line of text long enough to measure")
+
+    out
+end labels
+
+// The whole screen, rebuilt from scratch every time anything changes.
+//
+// **This is what a trailing block bought**, and it is the reason the second half of this card
+// waited for card 0171: the tree is indentation, which is what SwiftUI gets from `@ViewBuilder` and
+// trailing-closure syntax together.
+screen(count: &Signal[int], offset: &Signal[int], rows: []string) -> &View
+    var items: Buf[&View] = buf()
+
+    for i in 0..<rows.len
+        items.push(text(rows[i]).padding(3))
+
+    column(spacing = 10):
+        text(s"count: ${count.read()}").padding(6)
+
+        row([
+            button("increment", () -> count.set(count.read() + 1)),
+            button("decrement", () -> count.set(count.read() - 1), 0x8A4A3Au32)
+        ], 10)
+
+        scroll(column(items.view(), 0), offset, 420).background(PANEL)
+end screen
+
+// How many boxed nodes that tree holds, counted rather than estimated: one `Text` and one `Padding`
+// a row, the two buttons at three links each, the label and its padding, the two containers, the
+// scroller and the background it sits behind.
+nodes(rows: int) -> int = 2 * rows + 2 + 6 + 2 + 2 + 2
+
+// ## The measurement
+
+// Build the tree `reps` times and report what one rebuild cost.
+//
+// **Nothing is drawn and nothing is measured here**, deliberately: this is the price of the boxes
+// alone -- the allocation, the retain of every child as its parent stores it, and the release of
+// the whole graph as the previous tree goes. `frame_cost` below adds layout and paint, and the
+// difference between the two is what says whether a rebuild or a repaint is the thing to worry
+// about.
+build_cost(count: &Signal[int], offset: &Signal[int], rows: []string, reps: int) -> (u64, u64)
+    // One outside the timing, so the first build's lazily-made pieces are not charged to the loop.
+    var tree = screen(count, offset, rows)
+
+    val a0 = allocs()
+    val t0 = ticks_ns()
+
+    for i in 0..<reps
+        tree = screen(count, offset, rows)
+
+    val t1 = ticks_ns()
+    val a1 = allocs()
+
+    ((t1 - t0) / u64(reps), (a1 - a0) / u64(reps))
+end build_cost
+
+// Build, lay out and paint the tree `reps` times -- a whole frame's worth of work, minus the
+// present. Run against a canvas whose caches are already warm, which is what the second frame
+// onwards sees.
+frame_cost(c: *SdlCanvas, count: &Signal[int], offset: &Signal[int], rows: []string,
+           reps: int) -> (u64, u64)
+    val at = Rect(0, 0, int(WIDTH), int(HEIGHT))
+
+    c.taps.reset()
+
+    var warm = screen(count, offset, rows)
+
+    warm.measure(c, Size(at.w, at.h))
+    warm.paint(c, at)
+
+    val a0 = allocs()
+    val t0 = ticks_ns()
+
+    for i in 0..<reps
+        val tree = screen(count, offset, rows)
+
+        c.taps.reset()
+        tree.measure(c, Size(at.w, at.h))
+        tree.paint(c, at)
+
+    val t1 = ticks_ns()
+    val a1 = allocs()
+
+    ((t1 - t0) / u64(reps), (a1 - a0) / u64(reps))
+end frame_cost
+
+report(what: string, ns: u64, per: u64, n: int)
+    val us = real(ns) / 1000.0
+    val budget = us / 16667.0 * 100.0
+
+    print(s"${what}: ${us} us, ${per} allocations, ${real(ns) / real(n)} ns a node, ${budget}% of a 60 Hz frame")
+end report
+
+main(args: []string) -> Result[unit, string]
+    // `--bench` runs the whole thing against SDL's dummy video driver: no window, no display server,
+    // and every line below still runs. That is what makes the number something a machine can take
+    // rather than something a person has to watch.
+    val bench = args.len > 1 && args[1] == "--bench"
+
+    // How many rows, so the same binary answers whether the cost is linear in the tree. A list of
+    // thirty and a list of three thousand are the two ends of what anybody scrolls.
+    var n = ROWS
+
+    if args.len > 2 then n = parse_int(args[2]).unwrap_or(ROWS)
+
+    if bench then set_hint("SDL_VIDEO_DRIVER", "dummy")
+
+    val path = font_path()
+
+    if path == "" then return Err("none of the fonts this probe knows about is on this machine")
+
+    if !init(INIT_VIDEO) then return Err(s"SDL would not start: ${error()}")
+
+    if !ttf_init() then return Err(s"SDL_ttf would not start: ${error()}")
+
+    val window = create_window("syslUI — card 0203", WIDTH, HEIGHT,
+                               if bench then WINDOW_HIDDEN else 0u64).expect("a window")
+    val renderer = window.create_renderer().expect("a renderer")
+    val font = open_font(path, 15.0).expect("the font opened")
+
+    var c = SdlCanvas(renderer, font, map(), map(), 20, hits())
+
+    val count = signal(0)
+    val offset = signal(0)
+    val rows = labels(n)
+    val v = rows.view()
+
+    // The tree is rebuilt on the frame after anything it read changed, which is what makes this a
+    // measurement of a rebuild rather than of a repaint. **The dependent is held by this frame, not
+    // by the tree** -- a `&Fn()` the loop owns, so it survives every rebuild, where a handler
+    // belonging to a node would go with the node.
+    val dirty = signal(true)
+    val mark: &Fn() -> unit = () -> dirty.set(true)
+
+    count.watch(mark)
+    offset.watch(mark)
+
+    if bench
+        print(s"${n} rows, ${nodes(n)} boxed nodes")
+
+        val (bns, ba) = build_cost(count, offset, v, 200)
+
+        report("rebuild        ", bns, ba, nodes(n))
+
+        val (fns, fa) = frame_cost(&c, count, offset, v, 200)
+
+        report("rebuild + frame", fns, fa, nodes(n))
+
+        print(s"allocations ${allocs()}, frees ${frees()}, live ${allocs() - frees()}")
+
+        return Ok(())
+
+    renderer.set_vsync(true)
+
+    var tree = screen(count, offset, v)
+    var running = true
+    var rebuilds = 0
+    var rebuild_ns = 0u64
+    var reported_at = ticks_ns()
+
+    while running
+        while true
+            poll_event() match
+                Some(e) ->
+                    if e.kind() == EventKind.Quit then running = false
+                    elif e.kind() == EventKind.KeyDown && e.key_scancode() == SCANCODE_ESCAPE
+                        running = false
+                    elif e.kind() == EventKind.MouseButtonDown
+                        c.taps.tap(int(e.mouse_x()), int(e.mouse_y()))
+                    elif e.kind() == EventKind.MouseWheel
+                        val next = offset.read() - int(e.wheel_y()) * 40
+
+                        offset.set(if next < 0 then 0 else next)
+                None -> break
+
+        if dirty.read()
+            val t0 = ticks_ns()
+
+            tree = screen(count, offset, v)
+
+            rebuild_ns += ticks_ns() - t0
+            rebuilds += 1
+            dirty.set(false)
+
+        renderer.clear_to(rgb(18, 20, 28))
+
+        c.taps.reset()
+
+        val at = Rect(0, 0, int(WIDTH), int(HEIGHT))
+
+        tree.measure(&c, Size(at.w, at.h))
+        tree.paint(&c, at)
+
+        renderer.present()
+
+        if ticks_ns() - reported_at >= 1_000_000_000u64
+            if rebuilds > 0
+                print(s"${rebuilds} rebuilds, ${real(rebuild_ns) / real(rebuilds) / 1000.0} us each")
+
+            rebuilds = 0
+            rebuild_ns = 0u64
+            reported_at = ticks_ns()
+
+    Ok(())
+end main
