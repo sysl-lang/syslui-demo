@@ -30,11 +30,28 @@ real allocation traffic rather than a model of it.
 Linear in the node count, **one allocation a node and no more**, and about 24 ns a node to rebuild.
 The largest of those is 0.85% of a 60 Hz frame to rebuild and 8% to rebuild, lay out and paint.
 
+## What a person driving it costs, which the batch numbers hide
+
+Forty seconds of clicking and scrolling, 300 rows, logged a second at a time:
+
+| what is happening | rebuilds a second | cost each |
+|---|---:|---:|
+| scrolling — a burst of wheel events | 11–20 | **20–22 µs** |
+| one click, then a pause | 1–2 | **26–37 µs** |
+
+**Sustained interaction is the cheap case**, by half again. The likely reason is warmth rather than
+anything structural: a burst hands 614 boxes back to the allocator and immediately asks for 614
+more, so the free list and the cache lines are exactly right, where an isolated rebuild after an
+idle second finds neither. Worth a second measurement before it is called proven — but it is
+consistent across forty samples, and it points the same way as everything else here.
+
 **So the per-frame arena is refused.** It would attack the eighth of the frame that is allocation
 and leave the seven-eighths that is layout and paint exactly where it was. What is worth attacking,
 in the order the measurement puts it: **culling** — nothing here is culled, so all 3000 rows are
 measured and painted with twenty visible — then the **double measure** a container does, then
-allocation a distant third.
+allocation a distant third. And note which way the interactive numbers cut: the case a person
+actually feels is the one where allocation is *cheapest*, so an arena would be attacking the 27 µs
+nobody notices.
 
 ## Why the text cache is not an optimization
 
