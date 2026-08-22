@@ -15,10 +15,10 @@
 
 import sh.sysl.ui.*
 import sh.sysl.sdl3.{Color, Renderer, Texture, Window, rgb, init, create_window, poll_event,
-                     Event, EventKind, ticks_ns, error, set_hint}
+                     Event, EventKind, ticks_ns, error, set_hint, INIT_VIDEO, SCANCODE_ESCAPE,
+                     SCANCODE_SPACE, WINDOW_HIDDEN}
 import sh.sysl.sdl3.rect as sdl_rect
 import sh.sysl.sdl3_ttf.{ttf_init, open_font, Font}
-import sh.sysl.sdl3.c.{INIT_VIDEO, SCANCODE_ESCAPE, SCANCODE_SPACE, WINDOW_HIDDEN}
 import sysl.buf.{Buf, buf}
 import sysl.container.{Map, map}
 import sysl.fs.is_file
