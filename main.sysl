@@ -20,7 +20,7 @@ import sh.sysl.sdl3.rect as sdl_rect
 import sh.sysl.sdl3_ttf.{ttf_init, open_font, Font}
 import sh.sysl.sdl3.c.{INIT_VIDEO, SCANCODE_ESCAPE, SCANCODE_SPACE, WINDOW_HIDDEN}
 import sysl.buf.{Buf, buf}
-import sysl.container.map.{Map, map}
+import sysl.container.{Map, map}
 import sysl.fs.is_file
 import sysl.text.parse_int
 
