@@ -12,7 +12,7 @@
 //     sysl build . --lib ../syslui
 //
 // **The compiler floor is syslui's**, and is stated there rather than here: the tree below is
-// written as an indented block, which the released 0.0.66 is the first compiler to read.
+// written as an indented block, and its list of rows comes from `sysl.seq`.
 
 package {
   name    = "syslui-demo"

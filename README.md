@@ -23,16 +23,25 @@ real allocation traffic rather than a model of it.
 
 | rows | boxed nodes | rebuild | + layout and paint | allocations a rebuild |
 |---:|---:|---:|---:|---:|
-| 30 | 74 | 2.7 µs | 13.3 µs | 93 |
-| 300 | 614 | 15.5 µs | 118.0 µs | 641 |
-| 3000 | 6014 | 141.8 µs | 1337.3 µs | 6047 |
+| 30 | 74 | 2.1 µs | 10.8 µs | 91 |
+| 300 | 614 | 13.5 µs | 114.5 µs | 631 |
+| 3000 | 6014 | 124.1 µs | 1400.8 µs | 6031 |
 
-Linear in the node count, **one allocation a node and no more**, and about 24 ns a node to rebuild.
-The largest of those is 0.85% of a 60 Hz frame to rebuild and 8% to rebuild, lay out and paint.
+Linear in the node count, **one allocation a node and no more**, and about 22 ns a node to rebuild.
+The largest of those is 0.75% of a 60 Hz frame to rebuild and 8.4% to rebuild, lay out and paint.
+
+The table moved once since it was first taken, and by a little: the rows are produced by `sysl.seq`'s
+`map` and a container takes its children with one `extend` rather than a `push` a child, so a rebuild
+grows its storage once instead of doubling its way up. Measured against the older shape on the same
+machine and the same compiler, seven runs each, 300 rows went from a median 16.8 µs and 641
+allocations to 13.5 µs and 631. **The allocations that went are the reallocations**, and the one a
+node is what remains.
 
 ## What a person driving it costs, which the batch numbers hide
 
-Forty seconds of clicking and scrolling, 300 rows, logged a second at a time:
+Forty seconds of clicking and scrolling, 300 rows, logged a second at a time. These are the only
+figures here a person had to produce, so they were not retaken when the batch table above moved;
+what they compare is one kind of rebuild against another, which that change does not touch.
 
 | what is happening | rebuilds a second | cost each |
 |---|---:|---:|

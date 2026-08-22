@@ -22,6 +22,7 @@ import sh.sysl.sdl3_ttf.{ttf_init, open_font, Font}
 import sysl.buf.{Buf, buf}
 import sysl.container.{Map, map}
 import sysl.fs.is_file
+import sysl.seq.Sequence
 import sysl.text.parse_int
 
 // The counting allocator `package.hocon` names. Every box the program makes passes through it.
@@ -150,12 +151,13 @@ end labels
 // **This is what a trailing block bought**, and it is the reason the second half of this card
 // waited for card 0171: the tree is indentation, which is what SwiftUI gets from `@ViewBuilder` and
 // trailing-closure syntax together.
+//
+// **The whole function is the tree, and that is the second half of it.** A `for` cannot go inside a
+// block -- a block is a list of expressions and a loop is a statement -- so the rows used to be
+// pushed into a `Buf` above the call, which put three lines and a `.view()` between a container and
+// its children. `sysl.seq`'s `map` names the list instead of accumulating it, so it goes where a
+// literal would have.
 screen(count: &Signal[int], offset: &Signal[int], rows: []string) -> &View
-    var items: Buf[&View] = buf()
-
-    for i in 0..<rows.len
-        items.push(text(rows[i]).padding(3))
-
     column(spacing = 10):
         text(s"count: ${count.read()}").padding(6)
 
@@ -164,7 +166,7 @@ screen(count: &Signal[int], offset: &Signal[int], rows: []string) -> &View
             button("decrement", () -> count.set(count.read() - 1), 0x8A4A3Au32)
         ], 10)
 
-        scroll(column(items.view(), 0), offset, 420).background(PANEL)
+        scroll(column(rows.map(r -> text(r).padding(3)), 0), offset, 420).background(PANEL)
 end screen
 
 // How many boxed nodes that tree holds, counted rather than estimated: one `Text` and one `Padding`
