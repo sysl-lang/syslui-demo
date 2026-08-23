@@ -21,7 +21,8 @@ import sh.sysl.ui.*
 import sh.sysl.plutovg
 import sh.sysl.sdl3.{Renderer, Texture, Window, PixelFormat, TextureAccess, rgb, init,
                      create_window, poll_event, Event, EventKind, ticks_ns, error, set_hint,
-                     INIT_VIDEO, SCANCODE_ESCAPE, WINDOW_HIDDEN}
+                     INIT_VIDEO, SCANCODE_ESCAPE, WINDOW_HIDDEN, KMOD_GUI, KMOD_CTRL,
+                     set_clipboard_text}
 import sysl.fs.is_file
 import sysl.seq.{Sequence, generate}
 import sysl.slices.as_ptr
@@ -64,11 +65,22 @@ struct Model
     tab: &Signal[int]
     menu: &Signal[bool]
     asking: &Signal[bool]
+
+    // What is selected in each line of the About page. The toolkit selects; this program copies,
+    // because the clipboard is the window system's and a view should not reach it.
+    //
+    // **One signal a line, and a press clears them all** -- which is what a selection actually does
+    // everywhere else: starting a new one ends the old one. Doing it in the frame loop rather than
+    // in a view is right, because no view can know that a press landed in a sibling.
+    sel_a: &Signal[Selection]
+    sel_b: &Signal[Selection]
+    sel_c: &Signal[Selection]
 end Model
 
 model() -> &Model =
     Model(signal(0), signal(40), signal(0), signal(true), signal(false),
-          signal(0), signal(false), signal(false))
+          signal(0), signal(false), signal(false),
+          signal(nothing_selected()), signal(nothing_selected()), signal(nothing_selected()))
 
 // An action that adds to a signal, made once per rebuild rather than once per frame.
 private bump(s: &Signal[int], by: int) -> &Fn() -> unit = () -> s.set(s.read() + by)
@@ -156,10 +168,14 @@ screen(m: &Model, rows: [][]string) -> &View
                    .restyle(t -> t with { table = t.table with { striped = m.roomy.read(),
                                                                  lined = !m.roomy.read() } })
 
+    // **Drag across a line to select it, then ⌘C.** Only one line can be selected at a time, which
+    // is what the single selection signal means -- a selection spanning lines needs a document
+    // model, and three independent runs are not one.
     val about = column(spacing = 8):
-        text("Everything on the first tab is drawn by PlutoVG and shown by SDL3.")
-        text("The table builds only the rows in its window; 300 rows and 3000 cost the same.")
-        text("Nothing in this program names a colour. A button says .Error and the theme answers.")
+        text("Drag across a line below to select it, then press ⌘C or Ctrl+C to copy.")
+        selectable(ABOUT_1, m.sel_a)
+        selectable(ABOUT_2, m.sel_b)
+        selectable(ABOUT_3, m.sel_c)
 
     // **A tab bar is a Row of Reactive headers over a rule** -- no new view and no new drawing, which
     // is what says the pieces underneath were the right ones.
@@ -178,6 +194,25 @@ screen(m: &Model, rows: [][]string) -> &View
         .modal(m.asking, confirm(m), Some(shut))
         .restyle(_ -> look)
 end screen
+
+const ABOUT_1: string = "Everything on the first tab is drawn by PlutoVG and shown by SDL3."
+const ABOUT_2: string = "The table builds only the rows in its window; 300 rows and 3000 cost the same."
+const ABOUT_3: string = "Nothing in this program names a colour. A button says .Error and the theme answers."
+
+// End whatever was selected. A press starts a new selection, which is what ends the old one.
+private clear_selection(m: &Model)
+    if !m.sel_a.read().empty() then m.sel_a.set(nothing_selected())
+    if !m.sel_b.read().empty() then m.sel_b.set(nothing_selected())
+    if !m.sel_c.read().empty() then m.sel_c.set(nothing_selected())
+end clear_selection
+
+// What ⌘C puts on the clipboard: whichever line has something selected in it.
+private picked_text(m: &Model) -> string
+    val a = selected_text(ABOUT_1, m.sel_a.read())
+    val b = selected_text(ABOUT_2, m.sel_b.read())
+
+    if a != "" then a elif b != "" then b else selected_text(ABOUT_3, m.sel_c.read())
+end picked_text
 
 // What the "Options" button drops down. An ordinary column on a panel, raised above everything.
 private options(m: &Model) -> &View =
@@ -439,6 +474,14 @@ main(args: []string) -> Result[unit, string]
                     if kind == EventKind.Quit then running = false
                     elif kind == EventKind.KeyDown && e.key_scancode() == SCANCODE_ESCAPE
                         running = false
+
+                    // **⌘C on a Mac, Ctrl+C elsewhere**, and the program rather than the toolkit
+                    // does it: a selection is geometry, and the clipboard is the window system's.
+                    elif kind == EventKind.KeyDown && e.key_code() == 99u32 &&
+                         (e.key_mod() & (KMOD_GUI | KMOD_CTRL)) != 0u16
+                        val picked = picked_text(m)
+
+                        if picked != "" then set_clipboard_text(picked)
                     elif kind == EventKind.MouseMotion
                         mx = int(e.mouse_x())
                         my = int(e.mouse_y())
@@ -446,6 +489,10 @@ main(args: []string) -> Result[unit, string]
                         mx = int(e.mouse_x())
                         my = int(e.mouse_y())
                         down = true
+
+                        // A press ends whatever was selected; whatever is under the pointer starts
+                        // a new one while this frame paints.
+                        clear_selection(m)
 
                         // **The pointer is put where the click was before the hit list is
                         // consulted**, so that a control which reads the pointer during the paint
