@@ -59,9 +59,17 @@ struct Model
     offset: &Signal[int]
     roomy: &Signal[bool]
     daylight: &Signal[bool]
+
+    // Which tab is showing, whether the menu is down, and whether the dialog is up. All three are
+    // the application's, like every other piece of state that has to outlive a rebuild.
+    tab: &Signal[int]
+    menu: &Signal[bool]
+    asking: &Signal[bool]
 end Model
 
-model() -> &Model = Model(signal(0), signal(40), signal(0), signal(true), signal(false))
+model() -> &Model =
+    Model(signal(0), signal(40), signal(0), signal(true), signal(false),
+          signal(0), signal(false), signal(false))
 
 // An action that adds to a signal, made once per rebuild rather than once per frame.
 private bump(s: &Signal[int], by: int) -> &Fn() -> unit = () -> s.set(s.read() + by)
@@ -92,20 +100,21 @@ labels(n: int) -> [][]string =
 screen(m: &Model, rows: [][]string) -> &View
     val look = if m.daylight.read() then light() else dark()
     val nothing: &Fn() -> unit = () -> ()
+    val shut: &Fn() -> unit = () -> m.asking.set(false)
 
-    val body = column(spacing = 12):
-        text("syslUI — every control there is").padding(4)
-
-        divider()
-
+    val controls = column(spacing = 12):
         row([
             text(s"count: ${m.count.read()}").padding(6).frame(150, 30),
             button("increment", bump(m.count, 1)),
-            button("decrement", bump(m.count, -1), .Error)
+            button("decrement", bump(m.count, -1), .Error),
+
+            // **A modal is opened by an ordinary signal write**, and closed by one. Nothing about
+            // the button knows there is a dialog.
+            button("Reset…", () -> m.asking.set(true), .Secondary, .Outline)
         ], 10)
 
-        // Four shapes and six colours out of the ten numbers in a `Theme`. Every one of these
-        // moves when the daylight switch does, and not one of them names a colour.
+        // Four shapes and six colours out of the ten numbers in a `Theme`. Every one of these moves
+        // when the daylight switch does, and not one of them names a colour.
         row([
             button("Filled", nothing),
             button("Outline", nothing, .Secondary, .Outline),
@@ -117,16 +126,20 @@ screen(m: &Model, rows: [][]string) -> &View
 
         row([
             checkbox(m.roomy, "striped rows"),
-            spacer().frame(40, 1),
+            spacer().frame(30, 1),
             text("daylight").padding(2),
-            switch(m.daylight, .Accent)
+            switch(m.daylight, .Accent),
+            spacer().frame(30, 1),
+
+            // **The menu escapes every clip and sits above everything after it**, which is the whole
+            // reason an overlay is raised rather than painted.
+            button("Options", () -> m.menu.set(!m.menu.read()), .Accent, .Soft)
+                .popover(m.menu, options(m))
         ], 12)
 
-        // **A grid rather than a row, so the three lines below line up down the screen** -- which
-        // is the difference between the two containers in one place: a row would have started each
-        // slider wherever its label's text happened to end, and the labels are different lengths.
-        //
-        // Four twenty-fourths for the label, sixteen for the control, four for the reading.
+        // **A grid rather than a row, so the two lines below line up down the screen** -- a row would
+        // have started each control wherever its own label's text happened to end, and the labels
+        // are different lengths.
         grid():
             text("volume").padding(4).cell(4)
             slider(m.volume, 0, 100, 260).cell(16)
@@ -136,25 +149,63 @@ screen(m: &Model, rows: [][]string) -> &View
             progress(real(m.volume.read()) / 100.0, 380, .Success).cell(16)
             text("").cell(4)
 
-        divider()
+    // **The checkbox restyles the table rather than passing it a flag**, which is the same sentence
+    // as changing a colour: striping and rules are alternatives -- both say "this row ends here" --
+    // so turning one off turns the other on.
+    val data = table([col("#", true), flex_col("name"), col("status"), col("value", true)],
+                     rows, m.offset, 300, Some(i -> m.count.set(int(i))))
+                   .restyle(t -> t with { table = t.table with { striped = m.roomy.read(),
+                                                                 lined = !m.roomy.read() } })
 
-        // **A table, which is made entirely of the pieces above it** -- a column of rows inside a
-        // scroller, with the widths decided once so that the columns line up. Tapping a row sets
-        // the counter, which is the shortest way to show that the index comes back.
-        //
-        // **The last line is a call chain broken before its dot**, which no released compiler could
-        // read when this file was written. A chain of modifiers is how anything gets styled, so a
-        // chain that cannot be broken is a chain that has to fit on one line.
-        // **The checkbox restyles the table rather than passing it a flag**, which is the same
-        // sentence as changing a colour: striping and rules are alternatives -- both say "this row
-        // ends here" -- so turning one off turns the other on.
-        table([col("#", true), flex_col("name"), col("status"), col("value", true)],
-              rows, m.offset, 340, Some(i -> m.count.set(int(i))))
-            .restyle(t -> t with { table = t.table with { striped = m.roomy.read(),
-                                                          lined = !m.roomy.read() } })
+    val about = column(spacing = 8):
+        text("Everything on the first tab is drawn by PlutoVG and shown by SDL3.")
+        text("The table builds only the rows in its window; 300 rows and 3000 cost the same.")
+        text("Nothing in this program names a colour. A button says .Error and the theme answers.")
 
-    body.padding(12).foreground(look.ink).restyle(_ -> look)
+    // **A tab bar is a Row of Reactive headers over a rule** -- no new view and no new drawing, which
+    // is what says the pieces underneath were the right ones.
+    val body = column(spacing = 12):
+        text("syslUI — every control there is").padding(4)
+
+        tabs(["Controls", "Data", "About"], m.tab,
+             i -> if i == 0 then controls elif i == 1 then data else about)
+
+    // **The modal wraps the root**, because it centres in the rectangle it is given and that is the
+    // window only here. The restyle is outside it so that the dialog is themed too -- an overlay
+    // carries the theme it was raised under, which is what makes that work at all.
+    body.padding(12)
+        .foreground(look.ink)
+        .modal(m.asking, confirm(m), Some(shut))
+        .restyle(_ -> look)
 end screen
+
+// What the "Options" button drops down. An ordinary column on a panel, raised above everything.
+private options(m: &Model) -> &View =
+    column(spacing = 4):
+        button("Reset the count", () -> m.count.set(0), .Primary, .Soft)
+        button("Full volume", () -> m.volume.set(100), .Success, .Soft)
+        button("Mute", () -> m.volume.set(0), .Warning, .Soft)
+    .padding(8)
+        .panel()
+        .border(dark().edge, 1, 6)
+
+// The dialog. It is an ordinary tree; what makes it a dialog is being raised.
+private confirm(m: &Model) -> &View =
+    column(spacing = 10):
+        text("Reset the counter?").padding(4)
+
+        row([
+            button("Cancel", () -> m.asking.set(false), .Secondary, .Outline),
+            button("Reset", () -> reset(m), .Error)
+        ], 8)
+    .padding(16)
+        .panel()
+        .border(dark().edge, 1, 6)
+
+private reset(m: &Model)
+    m.count.set(0)
+    m.asking.set(false)
+end reset
 
 // What the window is cleared to, which is the application's colour rather than the toolkit's: a
 // `Theme` says what an interface's own surfaces look like and says nothing about what is behind
@@ -229,8 +280,7 @@ frame_cost(c: *PlutoCanvas, surf: &plutovg.Surface, m: &Model, rows: [][]string,
     var warm = screen(m, rows)
 
     c.taps.reset()
-    warm.measure(c, Size(at.w, at.h))
-    warm.paint(c, at)
+    render(warm, c, at)
 
     val a0 = allocs()
     val t0 = ticks_ns()
@@ -240,8 +290,7 @@ frame_cost(c: *PlutoCanvas, surf: &plutovg.Surface, m: &Model, rows: [][]string,
 
         surf.clear(fraction(GROUND, 16), fraction(GROUND, 8), fraction(GROUND, 0))
         c.taps.reset()
-        tree.measure(c, Size(at.w, at.h))
-        tree.paint(c, at)
+        render(tree, c, at)
 
     val t1 = ticks_ns()
     val a1 = allocs()
@@ -321,17 +370,14 @@ main(args: []string) -> Result[unit, string]
     val m = model()
     val rows = labels(n)
 
-    // The tree is rebuilt on the frame after anything it read changed. **The dependent is held by
-    // this frame, not by the tree** -- a `&Fn()` the loop owns, so it survives every rebuild, where a
-    // handler belonging to a node would go with the node.
-    val dirty = signal(true)
-    val mark: &Fn() -> unit = () -> dirty.set(true)
-
-    m.count.watch(mark)
-    m.volume.watch(mark)
-    m.offset.watch(mark)
-    m.roomy.watch(mark)
-    m.daylight.watch(mark)
+    // **The tree is rebuilt when anything at all has been written**, and `writes()` is what says so:
+    // one counter for the whole application, compared against what this loop last saw.
+    //
+    // This used to be a `dirty` signal and a `mark` closure registered on every piece of state --
+    // eight lines, one per signal, and the one somebody forgets is a control that draws correctly
+    // and silently never updates. There is nothing here to forget: a signal added tomorrow is
+    // covered by the same comparison.
+    var seen = writes() - 1
 
     if shot
         m.daylight.set(daylight)
@@ -345,8 +391,7 @@ main(args: []string) -> Result[unit, string]
         val bg = window_ground(m)
 
         surf.clear(fraction(bg, 16), fraction(bg, 8), fraction(bg, 0))
-        tree.measure(&c, Size(at.w, at.h))
-        tree.paint(&c, at)
+        render(tree, &c, at)
 
         val name = if daylight then "shot-light.png" else "shot.png"
 
@@ -423,9 +468,9 @@ main(args: []string) -> Result[unit, string]
 
         last = now
 
-        if dirty.read()
+        if writes() != seen
             tree = screen(m, rows)
-            dirty.set(false)
+            seen = writes()
 
         // **A frame is drawn every time round whether anything changed or not**, and that is not
         // waste: a hover easing toward its colour is a change to the *picture* and not to the state,
@@ -440,8 +485,9 @@ main(args: []string) -> Result[unit, string]
 
         val at = Rect(0, 0, WIDTH, HEIGHT)
 
-        tree.measure(&c, Size(at.w, at.h))
-        tree.paint(&c, at)
+        // **`render` rather than `measure` and `paint`**, because a frame is the tree *and* whatever
+        // the tree raised above itself. Painting it by hand would silently never draw the dialog.
+        render(tree, &c, at)
 
         tex.update(as_ptr(surf.data()), i32(surf.stride()))
         renderer.clear()
