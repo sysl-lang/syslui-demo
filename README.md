@@ -121,13 +121,14 @@ column(spacing = 12):
         switch(m.daylight, .Accent)
     ], 12)
 
-    row([
-        text("volume").padding(4).frame(90, 26),
-        slider(m.volume, 0, 100, 260),
-        text(s"${m.volume.read()}%").padding(4)
-    ], 10)
+    grid():
+        text("volume").padding(4).cell(4)
+        slider(m.volume, 0, 100, 260).cell(16)
+        text(s"${m.volume.read()}%").padding(4).cell(4)
 
-    row([progress(real(m.volume.read()) / 100.0, 380, .Success), spacer()], 0)
+        text("progress").padding(4).cell(4)
+        progress(real(m.volume.read()) / 100.0, 380, .Success).cell(16)
+        text("").cell(4)
 
     divider()
 
@@ -153,9 +154,10 @@ would be showing the animation and hiding the architecture.
 this was written. A chain of modifiers is how anything gets styled, so a chain that cannot be broken
 is a chain that has to fit on one line.
 
-**The progress bar sits in a `Row` with a spacer** because a `Column` gives every child the column's
-whole width — which is what the dividers and the panel want and not what a bar 380 wide wants. A
-`Row` honours what a child measured to, and the spacer takes the rest.
+**The volume and progress lines are a `grid`, not two `row`s**, and that is the difference between
+the two containers in one place: "volume" and "progress" are different lengths, so a row would have
+started each control wherever its own label's text ended. On the grid the label takes four
+twenty-fourths and the control sixteen, so both controls begin and end on the same columns.
 
 The whole tree is rebuilt on every signal write — deliberately the whole tree, so the number is the
 worst case rather than what rebuilding only what read the signal would buy later. The frame is drawn

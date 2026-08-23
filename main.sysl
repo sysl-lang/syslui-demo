@@ -122,17 +122,19 @@ screen(m: &Model, rows: [][]string) -> &View
             switch(m.daylight, .Accent)
         ], 12)
 
-        row([
-            text("volume").padding(4).frame(90, 26),
-            slider(m.volume, 0, 100, 260),
-            text(s"${m.volume.read()}%").padding(4)
-        ], 10)
+        // **A grid rather than a row, so the three lines below line up down the screen** -- which
+        // is the difference between the two containers in one place: a row would have started each
+        // slider wherever its label's text happened to end, and the labels are different lengths.
+        //
+        // Four twenty-fourths for the label, sixteen for the control, four for the reading.
+        grid():
+            text("volume").padding(4).cell(4)
+            slider(m.volume, 0, 100, 260).cell(16)
+            text(s"${m.volume.read()}%").padding(4).cell(4)
 
-        // **A row with a spacer after it, because a `Column` gives every child the column's whole
-        // width.** That is what a divider and the panel below want, and it is not what a bar 380
-        // wide wants -- so the fixed-width child goes in a `Row`, which does honour what a child
-        // measured to, and the spacer takes what is left over.
-        row([progress(real(m.volume.read()) / 100.0, 380, .Success), spacer()], 0)
+            text("progress").padding(4).cell(4)
+            progress(real(m.volume.read()) / 100.0, 380, .Success).cell(16)
+            text("").cell(4)
 
         divider()
 
