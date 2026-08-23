@@ -58,7 +58,7 @@ struct Model
     volume: &Signal[int]
     offset: &Signal[int]
     roomy: &Signal[bool]
-    night: &Signal[bool]
+    daylight: &Signal[bool]
 end Model
 
 model() -> &Model = Model(signal(0), signal(40), signal(0), signal(true), signal(false))
@@ -74,35 +74,47 @@ labels(n: int) -> []string =
 
 // The whole screen, rebuilt from scratch every time anything changes.
 //
-// **Two of these controls change the screen rather than decorate it**, which is the point: the
-// checkbox sets how much room a row gets and the switch sets what the list sits on, so tapping
-// either is a signal write, a rebuild, and a visibly different tree. A demo whose switches only
-// moved themselves would be showing the animation and hiding the architecture.
+// **The switch marked "daylight" restyles the entire tree**, which is the demonstration worth having:
+// one `.restyle(_ -> light())` at the root and every control, every label and every panel below it
+// is a different interface. Nothing else in this function knows it happened, and no call site names
+// a colour -- a button says `.Error` and the theme says what that is.
 //
-// **The last line is a call chain broken before its dot**, which no released compiler could read
-// when this file was written. It is here because it is what the toolkit's own surface looks like:
-// a chain of modifiers is how anything gets styled, and a chain that cannot be broken is a chain
-// that has to fit on one line.
+// **Two of the other controls change the screen rather than themselves** for the same reason: the
+// checkbox sets how much room a row gets. Each is a signal write, a rebuild, and a visibly different
+// tree. A demo whose switches only moved themselves would be showing the animation and hiding the
+// architecture.
 screen(m: &Model, rows: []string) -> &View
     val gap = if m.roomy.read() then 8 else 3
-    val ground = if m.night.read() then NIGHT else PANEL
+    val look = if m.daylight.read() then light() else dark()
+    val nothing: &Fn() -> unit = () -> ()
 
-    column(spacing = 12):
+    val body = column(spacing = 12):
         text("syslUI — every control there is").padding(4)
 
-        divider(EDGE)
+        divider()
 
         row([
             text(s"count: ${m.count.read()}").padding(6).frame(150, 30),
             button("increment", bump(m.count, 1)),
-            button("decrement", bump(m.count, -1), 0x8A4A3Au32)
+            button("decrement", bump(m.count, -1), .Error)
         ], 10)
+
+        // Four shapes and six colours out of the ten numbers in a `Theme`. Every one of these
+        // moves when the daylight switch does, and not one of them names a colour.
+        row([
+            button("Filled", nothing),
+            button("Outline", nothing, .Secondary, .Outline),
+            button("Dashed", nothing, .Accent, .Dashed),
+            button("Soft", nothing, .Success, .Soft),
+            button("Soft", nothing, .Warning, .Soft),
+            button("Outline", nothing, .Error, .Outline)
+        ], 8)
 
         row([
             checkbox(m.roomy, "roomy rows"),
             spacer().frame(40, 1),
-            text("night").padding(2),
-            switch(m.night)
+            text("daylight").padding(2),
+            switch(m.daylight, .Accent)
         ], 12)
 
         row([
@@ -115,13 +127,23 @@ screen(m: &Model, rows: []string) -> &View
         // width.** That is what a divider and the panel below want, and it is not what a bar 380
         // wide wants -- so the fixed-width child goes in a `Row`, which does honour what a child
         // measured to, and the spacer takes what is left over.
-        row([progress(real(m.volume.read()) / 100.0, 380), spacer()], 0)
+        row([progress(real(m.volume.read()) / 100.0, 380, .Success), spacer()], 0)
 
-        divider(EDGE)
+        divider()
 
-        scroll(column(rows.map(r -> text(r).padding(gap)), 0), m.offset, 420)
-            .background(ground, 8)
+        // **The last line is a call chain broken before its dot**, which no released compiler could
+        // read when this file was written. A chain of modifiers is how anything gets styled, so a
+        // chain that cannot be broken is a chain that has to fit on one line.
+        scroll(column(rows.map(r -> text(r).padding(gap)), 0), m.offset, 380)
+            .panel()
+
+    body.padding(12).foreground(look.ink).restyle(_ -> look)
 end screen
+
+// What the window is cleared to, which is the application's colour rather than the toolkit's: a
+// `Theme` says what an interface's own surfaces look like and says nothing about what is behind
+// them.
+window_ground(m: &Model) -> u32 = if m.daylight.read() then 0xF7F8FA else 0x12141C
 
 // How many boxed nodes that tree holds, counted rather than estimated.
 //
@@ -129,7 +151,7 @@ end screen
 // modifiers is built inside the `Reactive`'s body during *paint* and thrown away with the frame, so
 // what the retained tree holds is the `Reactive` and the `Tappable` around it. The same is true of a
 // checkbox. Everything else is one node a wrapper.
-nodes(rows: int) -> int = 2 * rows + 32
+nodes(rows: int) -> int = 2 * rows + 46
 
 // A font the machine already has, checked rather than hard-coded.
 //
@@ -242,6 +264,11 @@ main(args: []string) -> Result[unit, string]
     // program that draws the frame can hand one over for a person to look at.
     val shot = args.len > 1 && args[1] == "--shot"
 
+    // `--shot light` renders the same frame under the other theme, which is the cheapest way to
+    // check that a restyle actually reaches everything -- a colour a control had baked in shows up
+    // as the one thing on the page that did not move.
+    val daylight = args.len > 2 && args[2] == "light"
+
     var n = ROWS
 
     if args.len > 2 then n = parse_int(args[2]).unwrap_or(ROWS)
@@ -285,21 +312,28 @@ main(args: []string) -> Result[unit, string]
     m.volume.watch(mark)
     m.offset.watch(mark)
     m.roomy.watch(mark)
-    m.night.watch(mark)
+    m.daylight.watch(mark)
 
     if shot
+        m.daylight.set(daylight)
+
         val tree = screen(m, rows)
         val at = Rect(0, 0, WIDTH, HEIGHT)
 
         // On the "increment" button, so the frame shows a hover as well as everything at rest.
         c.point(300, 76, false)
-        surf.clear(fraction(GROUND, 16), fraction(GROUND, 8), fraction(GROUND, 0))
+
+        val bg = window_ground(m)
+
+        surf.clear(fraction(bg, 16), fraction(bg, 8), fraction(bg, 0))
         tree.measure(&c, Size(at.w, at.h))
         tree.paint(&c, at)
 
-        if !surf.write_png("shot.png") then return Err("the screenshot could not be written")
+        val name = if daylight then "shot-light.png" else "shot.png"
 
-        print("wrote shot.png")
+        if !surf.write_png(name) then return Err("the screenshot could not be written")
+
+        print(s"wrote ${name}")
 
         return Ok(())
 
@@ -381,7 +415,9 @@ main(args: []string) -> Result[unit, string]
         c.tick(dt)
         c.taps.reset()
 
-        surf.clear(fraction(GROUND, 16), fraction(GROUND, 8), fraction(GROUND, 0))
+        val bg = window_ground(m)
+
+        surf.clear(fraction(bg, 16), fraction(bg, 8), fraction(bg, 0))
 
         val at = Rect(0, 0, WIDTH, HEIGHT)
 
