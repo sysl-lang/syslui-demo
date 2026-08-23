@@ -21,7 +21,7 @@ and asks PlutoVG to write its own surface out — so it is byte for byte what th
 it is produced by the same program with no display server anywhere near it.
 
 ```
-sysl build . --lib ../syslui
+sysl build .
 ./syslui-demo              # a window: every control, and a scrollable table
 ./syslui-demo --shot       # no window — draws one frame and writes shot.png
 ./syslui-demo --shot light # …under the light theme, as shot-light.png
@@ -49,32 +49,25 @@ the `stb_truetype` it vendors, so text is measured and drawn by the same library
 everything else — which also means the metrics are identical on every platform, where two font
 stacks would have disagreed.
 
-## The keyboard, which is the application's to deliver
+## The frame loop is not in here
 
-syslUI routes keys and does not collect them. Three lines in the event loop is the whole of it:
+**The interactive path is one call**, and the hundred and eleven lines that used to be here are the
+reason [`syslui-sdl`](https://github.com/sysl-lang/syslui-sdl) exists — a window, an event pump, a
+frame loop and a texture upload are the same on every machine, and this program had a copy of all
+four. The Android demo had the other copy.
 
 ```
-window.start_text_input()                                    // or SDL sends no TextInput at all
-
-TextInput -> c.key(typed(e.text()))                          // already composed: a dead key, an
-                                                             // input method and a paste are one
-KeyDown   -> key_of(e.key_scancode()) match
-                 Some(k) -> c.key(Press(k, shift, by_word))
-                 None -> ()                                  // everything else is the program's
+run(app("syslUI", () -> screen(m, rows), () -> window_ground(m), WIDTH, HEIGHT, shortcuts(m)))
 ```
 
-**The letters are not mapped and must not be.** Typed text arrives as `TextInput`, already composed
-by the platform, which is the only way an accent, a CJK composition or a paste ever reaches a field.
-`key_of` maps the dozen keys that mean something to an editing surface and answers `None` for the
-rest, so ⌘C stays this program's and Escape still closes the window.
+What is left is what an application actually owns: the tree, the colour behind it, and its own
+shortcuts. `shortcuts` is handed every event before the driver sees it and answers `true` when it has
+dealt with one — which is where ⌘C, escape and the mouse wheel live, and where a driver that guessed
+would have been wrong for the second program that used it.
 
-**Which physical key means "by word" is a platform convention**, so the mapping is here rather than
-in the toolkit: alt counts as control, because that is how a Mac moves by word.
-
-**Nothing in the program routes a key to a field.** The canvas knows which field has the focus, a
-field consumes the frame's keys while it paints, and `render` forgets them at the end of the frame. A
-press anywhere blurs, so clicking a button below the field puts the keyboard away without either of
-them knowing the other exists.
+**The two offscreen modes are not a frame loop**, so they still open their own window and drive a
+canvas by hand. That is why this program still names sdl3 and plutovg directly while the Android one
+names neither.
 
 ## What it measures
 

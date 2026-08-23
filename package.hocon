@@ -6,10 +6,9 @@
 // machine can check and the second is what a person can click, and neither is a good substitute for
 // the other.
 //
-// The package it demonstrates is `sysl-lang/syslui`. Until both are public that is reached with
-// `--lib`, not by coordinate:
+// The package it demonstrates is `sysl-lang/syslui`, which is public and named as a coordinate:
 //
-//     sysl build . --lib ../syslui
+//     sysl build .
 //
 // **The compiler floor is syslui's**, and is stated there rather than here: the tree below is
 // written as an indented block, and its list of rows comes from `sysl.seq`.
@@ -23,9 +22,20 @@ package {
 // larger one: PlutoVG rasterizes glyphs itself through the `stb_truetype` it vendors, so the demo
 // measures and draws text through the same library it draws everything else with -- and the metrics
 // are therefore identical on every platform, where two font stacks would have disagreed.
+// **Nothing here is a `--lib` any more**: every repository named below is public, so this builds
+// from a fresh clone with nothing sitting beside it.
+//
+// **A dependency is not transitive, and that is a rule rather than an oversight.** Naming
+// `syslui-sdl` fetches syslUI with it and does *not* let this file `import sh.sysl.ui` -- a module
+// is importable only from the package that names it, so what a program uses it declares. All four
+// below are used directly: the toolkit for the tree, the driver for the window, and sdl3 and plutovg
+// for the two offscreen modes, which open their own window and drive a canvas by hand precisely
+// because they are not a frame loop.
 dependencies {
-  sdl3    { git = "github.com/sysl-lang/sdl3",    version = "0.3.0" }
-  plutovg { git = "github.com/sysl-lang/plutovg", version = "0.2.1" }
+  syslui     { git = "github.com/sysl-lang/syslui",     version = "0.1.0" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.1.0" }
+  sdl3       { git = "github.com/sysl-lang/sdl3",       version = "0.3.1" }
+  plutovg    { git = "github.com/sysl-lang/plutovg",    version = "0.2.1" }
 }
 
 requires {

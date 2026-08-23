@@ -18,6 +18,7 @@
 //     sysl build . --lib ../syslui
 
 import sh.sysl.ui.*
+import sh.sysl.ui_sdl.{app, run, stop}
 import sh.sysl.plutovg
 import sh.sysl.sdl3.{Renderer, Texture, Window, PixelFormat, TextureAccess, rgb, init,
                      create_window, poll_event, Event, EventKind, ticks_ns, error, set_hint,
@@ -483,7 +484,17 @@ main(args: []string) -> Result[unit, string]
 
     if args.len > 2 then n = parse_int(args[2]).unwrap_or(ROWS)
 
-    if bench || shot then set_hint("SDL_VIDEO_DRIVER", "dummy")
+    val m = model()
+    val rows = labels(n)
+
+    // **The interactive path opens no window here at all**: the driver does, which is what lets this
+    // program end at the tree it wants drawn. What follows is only the two offscreen modes, which
+    // drive the canvas by hand precisely because they are not a frame loop.
+    if !bench && !shot
+        return run(app("syslUI", () -> screen(m, rows), () -> window_ground(m), WIDTH, HEIGHT,
+                       shortcuts(m)))
+
+    set_hint("SDL_VIDEO_DRIVER", "dummy")
 
     val path = font_path()
 
@@ -508,9 +519,6 @@ main(args: []string) -> Result[unit, string]
                                       i32(WIDTH), i32(HEIGHT)).expect("a streaming texture")
 
     var c = pluto_canvas(vg, face, SIZE)
-
-    val m = model()
-    val rows = labels(n)
 
     // **The tree is rebuilt when anything at all has been written**, and `writes()` is what says so:
     // one counter for the whole application, compared against what this loop last saw.
@@ -571,115 +579,44 @@ main(args: []string) -> Result[unit, string]
 
         return Ok(())
 
-    // **Without this SDL sends no `TextInput` at all**, and a field would answer the arrow keys
-    // while refusing every letter. On a phone it is also what raises the on-screen keyboard.
-    window.start_text_input()
-
-    renderer.set_vsync(true)
-
-    var tree = screen(m, rows)
-    var running = true
-    var mx = 0
-    var my = 0
-    var down = false
-    var last = ticks_ns()
-    var frames = 0
-    var reported_at = last
-
-    while running
-        loop
-            poll_event() match
-                Some(e) ->
-                    val kind = e.kind()
-
-                    if kind == EventKind.Quit then running = false
-                    elif kind == EventKind.KeyDown && e.key_scancode() == SCANCODE_ESCAPE
-                        running = false
-
-                    // **⌘C on a Mac, Ctrl+C elsewhere**, and the program rather than the toolkit
-                    // does it: a selection is geometry, and the clipboard is the window system's.
-                    elif kind == EventKind.KeyDown && e.key_code() == 99u32 &&
-                         (e.key_mod() & (KMOD_GUI | KMOD_CTRL)) != 0u16
-                        val picked = picked_text(m)
-
-                        if picked != "" then set_clipboard_text(picked)
-                    // **Typed text arrives already composed**, which is the whole reason a field
-                    // takes a run rather than a character: a dead key, an input method and a paste
-                    // are all one `TextInput` carrying however many bytes they came to.
-                    elif kind == EventKind.TextInput
-                        c.key(typed(e.text()))
-                    elif kind == EventKind.KeyDown
-                        key_of(e.key_scancode()) match
-                            Some(k) ->
-                                c.key(Press(k, (e.key_mod() & KMOD_SHIFT) != 0u16,
-                                            by_word(e.key_mod())))
-                            None -> ()
-                    elif kind == EventKind.MouseMotion
-                        mx = int(e.mouse_x())
-                        my = int(e.mouse_y())
-                    elif kind == EventKind.MouseButtonDown
-                        mx = int(e.mouse_x())
-                        my = int(e.mouse_y())
-                        down = true
-
-                        // A press ends whatever was selected; whatever is under the pointer starts
-                        // a new one while this frame paints.
-                        clear_selection(m)
-
-                        // **The pointer is put where the click was before the hit list is
-                        // consulted**, so that a control which reads the pointer during the paint
-                        // that follows sees the press at the place it happened rather than at
-                        // wherever the mouse last moved.
-                        c.point(mx, my, true)
-                        c.taps.tap(mx, my)
-                    elif kind == EventKind.MouseButtonUp
-                        down = false
-                    elif kind == EventKind.MouseWheel
-                        val next = m.offset.read() - int(e.wheel_y()) * 40
-
-                        m.offset.set(if next < 0 then 0 else next)
-                None -> break
-
-        val now = ticks_ns()
-        var dt = real(now - last) / 1.0e9
-
-        if dt > 0.25 then dt = 0.25
-
-        last = now
-
-        if writes() != seen
-            tree = screen(m, rows)
-            seen = writes()
-
-        // **A frame is drawn every time round whether anything changed or not**, and that is not
-        // waste: a hover easing toward its colour is a change to the *picture* and not to the state,
-        // so a loop that only repainted after a rebuild would animate in steps of one tap.
-        c.point(mx, my, down)
-        c.tick(dt)
-        c.taps.reset()
-
-        val bg = window_ground(m)
-
-        surf.clear(fraction(bg, 16), fraction(bg, 8), fraction(bg, 0))
-
-        val at = Rect(0, 0, WIDTH, HEIGHT)
-
-        // **`render` rather than `measure` and `paint`**, because a frame is the tree *and* whatever
-        // the tree raised above itself. Painting it by hand would silently never draw the dialog.
-        render(tree, &c, at)
-
-        tex.update(as_ptr(surf.data()), i32(surf.stride()))
-        renderer.clear()
-        renderer.copy(tex)
-        renderer.present()
-
-        frames += 1
-
-        if now - reported_at >= 1_000_000_000u64
-            print(s"${frames} frames a second")
-
-            frames = 0
-            reported_at = now
-
     Ok(())
 end main
+
+// ## What the driver does not decide
+//
+// **Every event reaches here before the driver sees it**, and `true` means this program dealt with
+// it. That is where a shortcut belongs: what a program wants from the keyboard is unbounded, and a
+// driver that guessed would be wrong for the second program that used it.
+private shortcuts(m: &Model) -> &Fn(Event) -> bool = e -> handled(m, e)
+
+private handled(m: &Model, e: Event) -> bool
+    val kind = e.kind()
+
+    if kind == EventKind.KeyDown && e.key_scancode() == SCANCODE_ESCAPE
+        stop()
+
+        return true
+
+    // **⌘C on a Mac, Ctrl+C elsewhere**, and the program rather than the toolkit does it: a
+    // selection is geometry, and the clipboard is the window system's.
+    if kind == EventKind.KeyDown && e.key_code() == 99u32 &&
+       (e.key_mod() & (KMOD_GUI | KMOD_CTRL)) != 0u16
+        val picked = picked_text(m)
+
+        if picked != "" then set_clipboard_text(picked)
+
+        return true
+
+    if kind == EventKind.MouseWheel
+        val next = m.offset.read() - int(e.wheel_y()) * 40
+
+        m.offset.set(if next < 0 then 0 else next)
+
+        return true
+
+    // **A press ends whatever was selected, and then goes on to the driver**: whatever is under the
+    // pointer starts a new selection while the frame paints, which is the driver's half.
+    if kind == EventKind.MouseButtonDown then clear_selection(m)
+
+    false
+end handled
