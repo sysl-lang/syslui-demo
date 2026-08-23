@@ -253,9 +253,16 @@ const NOTES_FIELD: int = 2
 
 // The picture, or an honest report that it is not there. `shot.png` is the screenshot this program
 // writes with `--shot`, so the demo shows a picture of itself.
+//
+// **It is captioned, and the caption is not decoration.** Unlabelled, a small image of an interface
+// sitting under an interface reads as a rendering fault rather than as a photograph -- which is
+// exactly how it was read the first time somebody else ran this. A picture in a demo has to say that
+// it is a picture.
 private picture_of(m: &Model) -> &View =
     m.art match
-        Some(img) -> image_sized(img, 180, 112, Fit.Cover, 8)
+        Some(img) -> column(spacing = 4):
+            image_sized(img, 180, 112, Fit.Cover, 8)
+            text("shot.png, cropped to fill").padding(2)
         None -> text("run --shot first, or start me beside shot.png").padding(8).panel()
 
 // SDL's key events, as the toolkit's.
