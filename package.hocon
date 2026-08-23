@@ -19,9 +19,13 @@ package {
   version = "0.0.1"
 }
 
+// **SDL_ttf is gone and PlutoVG has taken its place**, which is a smaller program rather than a
+// larger one: PlutoVG rasterizes glyphs itself through the `stb_truetype` it vendors, so the demo
+// measures and draws text through the same library it draws everything else with -- and the metrics
+// are therefore identical on every platform, where two font stacks would have disagreed.
 dependencies {
-  sdl3     { git = "github.com/sysl-lang/sdl3",     version = "0.3.0" }
-  sdl3-ttf { git = "github.com/sysl-lang/sdl3-ttf", version = "0.3.0" }
+  sdl3    { git = "github.com/sysl-lang/sdl3",    version = "0.3.0" }
+  plutovg { git = "github.com/sysl-lang/plutovg", version = "0.2.0" }
 }
 
 requires {

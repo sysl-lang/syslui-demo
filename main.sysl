@@ -1,137 +1,70 @@
-// Card 0203, question 4: what does a rebuild cost under ARC?
+// syslUI's demo: every control the toolkit has, drawn by a software rasterizer and shown by SDL3.
 //
-// The other five questions were answered against a recorder that drew nothing, which is why they
-// are unit tests in the package. This one is about a real frame: a tree of a few hundred boxed
-// nodes thrown away and built again, laid out against a real font and drawn through a real
-// renderer, sixty times a second. What comes out is two numbers -- how long a rebuild takes and how
-// many allocations it makes -- and they are what decide whether the per-frame arena the mobile
-// survey argued for becomes a card or stays refused.
+// **The split this program exists to demonstrate is that syslUI draws and does not present.** What
+// the toolkit produces is a block of premultiplied ARGB32 pixels in a PlutoVG surface; getting those
+// onto a screen is the application's job, and here it is one streaming texture uploaded once a
+// frame. That is what lets the same tree, the same widgets and the same backend serve a desktop and
+// a phone, where SDL3 is also the presenter and cairo is not available at all.
 //
-// **The text cache is not an optimization here, it is the difference between measuring the right
-// thing and the wrong one.** Rasterizing a glyph run is a shaping pass and a texture upload, and a
-// loop that did it per row per frame would report SDL's cost as syslUI's. Both the measurement and
-// the texture are remembered by the canvas, which is what `androidkit/main.sysl:118` hoists by hand
-// and what a framework would do for you.
+// **It is also still the benchmark card 0203 asked for**, and now measures the thing the toolkit was
+// most likely to be wrong about: a software rasterizer redrawing a whole window every frame. `--bench
+// <rows>` runs against SDL's dummy video driver and prints three numbers -- what a rebuild costs,
+// what rebuilding and rasterizing costs, and what the upload costs -- so the question "is drawing in
+// software affordable at this size" has an answer rather than an opinion.
+//
+// The package it demonstrates is `sysl-lang/syslui`. Until it is published that is reached with
+// `--lib`, not by coordinate:
+//
+//     sysl build . --lib ../syslui
 
 import sh.sysl.ui.*
-import sh.sysl.sdl3.{Color, Renderer, Texture, Window, rgb, init, create_window, poll_event,
-                     Event, EventKind, ticks_ns, error, set_hint, INIT_VIDEO, SCANCODE_ESCAPE,
-                     SCANCODE_SPACE, WINDOW_HIDDEN}
-import sh.sysl.sdl3.rect as sdl_rect
-import sh.sysl.sdl3_ttf.{ttf_init, open_font, Font}
-import sysl.container.{Map, map}
+import sh.sysl.plutovg
+import sh.sysl.sdl3.{Renderer, Texture, Window, PixelFormat, TextureAccess, rgb, init,
+                     create_window, poll_event, Event, EventKind, ticks_ns, error, set_hint,
+                     INIT_VIDEO, SCANCODE_ESCAPE, WINDOW_HIDDEN}
 import sysl.fs.is_file
 import sysl.seq.{Sequence, generate}
+import sysl.slices.as_ptr
 import sysl.text.parse_int
 
 // The counting allocator `package.hocon` names. Every box the program makes passes through it.
 extern "ui_allocs" allocs() -> u64
 extern "ui_frees" frees() -> u64
 
-const WIDTH: i32 = 900
-const HEIGHT: i32 = 620
+const WIDTH: int = 900
+const HEIGHT: int = 660
 
 // Enough rows that a rebuild is a real walk rather than a rounding error, and few enough that the
 // list is still something a person could scroll to the end of.
 const ROWS: int = 300
 
-const INK: u32 = 0xE6E8EFu32
-const GROUND: u32 = 0x12141Cu32
-const PANEL: u32 = 0x1C2030u32
-const ACCENT: u32 = 0x3A6EA5u32
+const INK: u32 = 0xE6E8EF
+const GROUND: u32 = 0x12141C
+const PANEL: u32 = 0x1C2030
+const NIGHT: u32 = 0x0A0C12
+const EDGE: u32 = 0x2A2F3A
 
-// A canvas that draws into a window, measures in a real font, and remembers both.
-struct SdlCanvas
-    renderer: &Renderer
-    font: &Font
+const SIZE: f32 = 15.0
 
-    // A glyph run rasterized once and kept. **This is the cache card 0203 warned the probe not to
-    // do without** -- a frame loop that re-rasterizes is fast at nothing and would report SDL's
-    // cost as the tree's.
-    glyphs: Map[string, &Texture]
-
-    // The same run measured once and kept, which matters more than the texture: layout asks for a
-    // width during `measure` and again for every container that places the row.
-    widths: Map[string, int]
-
-    line_h: int
-    taps: Hits
-
-    // The texture for a run, made on the first frame that asks for it.
-    private glyph(*self, t: string) -> Option[&Texture]
-        self.glyphs.get(t) match
-            Some(tex) -> Some(tex)
-            None ->
-                self.font.texture(self.renderer, t, rgb(230, 232, 239)) match
-                    Some(tex) ->
-                        self.glyphs.put(t, tex)
-
-                        Some(tex)
-                    None -> None
-    end glyph
-end SdlCanvas
-
-impl Canvas for SdlCanvas
-    fill(*self, r: Rect, color: u32)
-        self.renderer.set_draw_color(rgb(u8((color >> 16) & 0xFF), u8((color >> 8) & 0xFF),
-                                         u8(color & 0xFF)))
-        self.renderer.fill_rect(f32(r.x), f32(r.y), f32(r.w), f32(r.h))
-    end fill
-
-    text(*self, r: Rect, t: string)
-        self.glyph(t) match
-            Some(tex) -> self.renderer.copy_at(tex, f32(r.x), f32(r.y))
-            None -> ()
-    end text
-
-    clip(*self, r: Rect)
-        self.renderer.set_clip_rect(sdl_rect(i32(r.x), i32(r.y), i32(r.w), i32(r.h)))
-
-    unclip(*self)
-        self.renderer.reset_clip_rect()
-
-    text_size(*self, s: string) -> Size
-        self.widths.get(s) match
-            Some(w) -> Size(w, self.line_h)
-            None ->
-                val (w, _) = self.font.measure(s)
-
-                self.widths.put(s, w)
-
-                Size(w, self.line_h)
-    end text_size
-
-    hit(*self, r: Rect, f: &Fn() -> unit)
-        self.taps.add(r, f)
-end SdlCanvas
-
-// A font the machine already has, checked rather than hard-coded.
-font_path() -> string
-    val candidates = [
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
-    ]
-
-    for i in 0..<candidates.len
-        if is_file(candidates[i]) then return candidates[i]
-
-    ""
-end font_path
-
-// ## The two programs the card asks for, as one screen
+// ## The application's state
 //
-// The counter is the smallest thing that exercises the whole loop -- build, lay out, paint, take a
-// tap, write a signal, rebuild. The list is the smallest thing that exercises what the counter
-// cannot: clipping, state that outlives a rebuild, and enough nodes for the churn to be felt.
-//
-// **They share a tree**, because what is being measured is a rebuild, and a rebuild is of the whole
-// thing. A framework that rebuilt only the subtree that read the signal is precisely what fine-
-// grained reactivity would buy later; this probe deliberately does not, so the number it reports is
-// the worst case rather than the best.
+// **Every long-lived value the interface reads is a signal the application owns**, which is
+// `scroll.sysl`'s finding turned into a declaration: a control keeps nothing of its own, so a switch
+// that survives a rebuild does so because the boolean it reads was never inside it. Five signals is
+// what this screen costs, and a framework that wanted `switch()` to remember by itself would have to
+// keep a retained element to remember *in*.
+struct Model
+    count: &Signal[int]
+    volume: &Signal[int]
+    offset: &Signal[int]
+    roomy: &Signal[bool]
+    night: &Signal[bool]
+end Model
+
+model() -> &Model = Model(signal(0), signal(40), signal(0), signal(true), signal(false))
+
+// An action that adds to a signal, made once per rebuild rather than once per frame.
+private bump(s: &Signal[int], by: int) -> &Fn() -> unit = () -> s.set(s.read() + by)
 
 // The rows, built once and kept, so that a rebuild is priced on the tree and not on string
 // formatting. A real application's rows come out of a model and this is what standing in for one
@@ -141,50 +74,100 @@ labels(n: int) -> []string =
 
 // The whole screen, rebuilt from scratch every time anything changes.
 //
-// **This is what a trailing block bought**, and it is the reason the second half of this card
-// waited for card 0171: the tree is indentation, which is what SwiftUI gets from `@ViewBuilder` and
-// trailing-closure syntax together.
+// **Two of these controls change the screen rather than decorate it**, which is the point: the
+// checkbox sets how much room a row gets and the switch sets what the list sits on, so tapping
+// either is a signal write, a rebuild, and a visibly different tree. A demo whose switches only
+// moved themselves would be showing the animation and hiding the architecture.
 //
-// **The whole function is the tree, and that is the second half of it.** A `for` cannot go inside a
-// block -- a block is a list of expressions and a loop is a statement -- so the rows used to be
-// pushed into a `Buf` above the call, which put three lines and a `.view()` between a container and
-// its children. `sysl.seq`'s `map` names the list instead of accumulating it, so it goes where a
-// literal would have.
-screen(count: &Signal[int], offset: &Signal[int], rows: []string) -> &View
-    column(spacing = 10):
-        text(s"count: ${count.read()}").padding(6)
+// **The last line is a call chain broken before its dot**, which no released compiler could read
+// when this file was written. It is here because it is what the toolkit's own surface looks like:
+// a chain of modifiers is how anything gets styled, and a chain that cannot be broken is a chain
+// that has to fit on one line.
+screen(m: &Model, rows: []string) -> &View
+    val gap = if m.roomy.read() then 8 else 3
+    val ground = if m.night.read() then NIGHT else PANEL
+
+    column(spacing = 12):
+        text("syslUI — every control there is").padding(4)
+
+        divider(EDGE)
 
         row([
-            button("increment", () -> count.set(count.read() + 1)),
-            button("decrement", () -> count.set(count.read() - 1), 0x8A4A3Au32)
+            text(s"count: ${m.count.read()}").padding(6).frame(150, 30),
+            button("increment", bump(m.count, 1)),
+            button("decrement", bump(m.count, -1), 0x8A4A3Au32)
         ], 10)
 
-        scroll(column(rows.map(r -> text(r).padding(3)), 0), offset, 420).background(PANEL)
+        row([
+            checkbox(m.roomy, "roomy rows"),
+            spacer().frame(40, 1),
+            text("night").padding(2),
+            switch(m.night)
+        ], 12)
+
+        row([
+            text("volume").padding(4).frame(90, 26),
+            slider(m.volume, 0, 100, 260),
+            text(s"${m.volume.read()}%").padding(4)
+        ], 10)
+
+        // **A row with a spacer after it, because a `Column` gives every child the column's whole
+        // width.** That is what a divider and the panel below want, and it is not what a bar 380
+        // wide wants -- so the fixed-width child goes in a `Row`, which does honour what a child
+        // measured to, and the spacer takes what is left over.
+        row([progress(real(m.volume.read()) / 100.0, 380), spacer()], 0)
+
+        divider(EDGE)
+
+        scroll(column(rows.map(r -> text(r).padding(gap)), 0), m.offset, 420)
+            .background(ground, 8)
 end screen
 
-// How many boxed nodes that tree holds, counted rather than estimated: one `Text` and one `Padding`
-// a row, the two buttons at three links each, the label and its padding, the two containers, the
-// scroller and the background it sits behind.
-nodes(rows: int) -> int = 2 * rows + 2 + 6 + 2 + 2 + 2
+// How many boxed nodes that tree holds, counted rather than estimated.
+//
+// **A button is two nodes and not five**, which is the counting mistake to avoid: its chain of
+// modifiers is built inside the `Reactive`'s body during *paint* and thrown away with the frame, so
+// what the retained tree holds is the `Reactive` and the `Tappable` around it. The same is true of a
+// checkbox. Everything else is one node a wrapper.
+nodes(rows: int) -> int = 2 * rows + 32
+
+// A font the machine already has, checked rather than hard-coded.
+//
+// **PlutoVG rasterizes glyphs itself, through the `stb_truetype` it vendors**, so this is a font
+// *file* rather than a font the system was asked to open -- and no SDL_ttf, no FreeType and no
+// fontconfig are anywhere in this program. That is the same reason the drawing works on a phone.
+font_path() -> string
+    val candidates = [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/System/Library/Fonts/Helvetica.ttc"
+    ]
+
+    for i in 0..<candidates.len
+        if is_file(candidates[i]) then return candidates[i]
+
+    ""
+end font_path
 
 // ## The measurement
 
 // Build the tree `reps` times and report what one rebuild cost.
 //
 // **Nothing is drawn and nothing is measured here**, deliberately: this is the price of the boxes
-// alone -- the allocation, the retain of every child as its parent stores it, and the release of
-// the whole graph as the previous tree goes. `frame_cost` below adds layout and paint, and the
-// difference between the two is what says whether a rebuild or a repaint is the thing to worry
-// about.
-build_cost(count: &Signal[int], offset: &Signal[int], rows: []string, reps: int) -> (u64, u64)
+// alone -- the allocation, the retain of every child as its parent stores it, and the release of the
+// whole graph as the previous tree goes.
+build_cost(m: &Model, rows: []string, reps: int) -> (u64, u64)
     // One outside the timing, so the first build's lazily-made pieces are not charged to the loop.
-    var tree = screen(count, offset, rows)
+    var tree = screen(m, rows)
 
     val a0 = allocs()
     val t0 = ticks_ns()
 
     for i in 0..<reps
-        tree = screen(count, offset, rows)
+        tree = screen(m, rows)
 
     val t1 = ticks_ns()
     val a1 = allocs()
@@ -192,17 +175,19 @@ build_cost(count: &Signal[int], offset: &Signal[int], rows: []string, reps: int)
     ((t1 - t0) / u64(reps), (a1 - a0) / u64(reps))
 end build_cost
 
-// Build, lay out and paint the tree `reps` times -- a whole frame's worth of work, minus the
-// present. Run against a canvas whose caches are already warm, which is what the second frame
-// onwards sees.
-frame_cost(c: *SdlCanvas, count: &Signal[int], offset: &Signal[int], rows: []string,
+// Build, lay out and **rasterize** the tree `reps` times -- a whole frame's drawing, minus the
+// upload and the present.
+//
+// **This is the number the plutovg decision rests on.** Every fill is antialiased spans computed on
+// the CPU, and the whole window is redrawn whether anything changed or not, so if software drawing
+// at this size were unaffordable it would show here and nowhere else.
+frame_cost(c: *PlutoCanvas, surf: &plutovg.Surface, m: &Model, rows: []string,
            reps: int) -> (u64, u64)
-    val at = Rect(0, 0, int(WIDTH), int(HEIGHT))
+    val at = Rect(0, 0, WIDTH, HEIGHT)
+
+    var warm = screen(m, rows)
 
     c.taps.reset()
-
-    var warm = screen(count, offset, rows)
-
     warm.measure(c, Size(at.w, at.h))
     warm.paint(c, at)
 
@@ -210,8 +195,9 @@ frame_cost(c: *SdlCanvas, count: &Signal[int], offset: &Signal[int], rows: []str
     val t0 = ticks_ns()
 
     for i in 0..<reps
-        val tree = screen(count, offset, rows)
+        val tree = screen(m, rows)
 
+        surf.clear(fraction(GROUND, 16), fraction(GROUND, 8), fraction(GROUND, 0))
         c.taps.reset()
         tree.measure(c, Size(at.w, at.h))
         tree.paint(c, at)
@@ -221,6 +207,18 @@ frame_cost(c: *SdlCanvas, count: &Signal[int], offset: &Signal[int], rows: []str
 
     ((t1 - t0) / u64(reps), (a1 - a0) / u64(reps))
 end frame_cost
+
+// What handing the finished pixels to SDL costs, which is the other half of the bargain: a software
+// rasterizer buys antialiased corners on every platform and pays for them with a whole surface
+// crossing to the GPU once a frame.
+upload_cost(tex: &Texture, surf: &plutovg.Surface, reps: int) -> u64
+    val t0 = ticks_ns()
+
+    for i in 0..<reps
+        tex.update(as_ptr(surf.data()), i32(surf.stride()))
+
+    (ticks_ns() - t0) / u64(reps)
+end upload_cost
 
 report(what: string, ns: u64, per: u64, n: int)
     val us = real(ns) / 1000.0
@@ -235,108 +233,173 @@ main(args: []string) -> Result[unit, string]
     // rather than something a person has to watch.
     val bench = args.len > 1 && args[1] == "--bench"
 
-    // How many rows, so the same binary answers whether the cost is linear in the tree. A list of
-    // thirty and a list of three thousand are the two ends of what anybody scrolls.
+    // `--shot` draws one frame with the pointer resting on the first button and writes it to a PNG.
+    //
+    // **A screenshot is the only automated check on what an interface actually looks like.** Every
+    // test in the package asserts a recording -- what was drawn where -- and a recording says
+    // nothing about whether the result is legible, whether two panels are the same colour, or
+    // whether a label has fallen off its button. PlutoVG can write its own surface out, so the
+    // program that draws the frame can hand one over for a person to look at.
+    val shot = args.len > 1 && args[1] == "--shot"
+
     var n = ROWS
 
     if args.len > 2 then n = parse_int(args[2]).unwrap_or(ROWS)
 
-    if bench then set_hint("SDL_VIDEO_DRIVER", "dummy")
+    if bench || shot then set_hint("SDL_VIDEO_DRIVER", "dummy")
 
     val path = font_path()
 
-    if path == "" then return Err("none of the fonts this probe knows about is on this machine")
+    if path == "" then return Err("none of the fonts this demo knows about is on this machine")
 
     if !init(INIT_VIDEO) then return Err(s"SDL would not start: ${error()}")
 
-    if !ttf_init() then return Err(s"SDL_ttf would not start: ${error()}")
-
-    val window = create_window("syslUI — card 0203", WIDTH, HEIGHT,
-                               if bench then WINDOW_HIDDEN else 0u64).expect("a window")
+    val window = create_window("syslUI", i32(WIDTH), i32(HEIGHT),
+                               if bench || shot then WINDOW_HIDDEN else 0u64).expect("a window")
     val renderer = window.create_renderer().expect("a renderer")
-    val font = open_font(path, 15.0).expect("the font opened")
 
-    var c = SdlCanvas(renderer, font, map(), map(), 20, hits())
+    // The one buffer both libraries touch. PlutoVG owns it and SDL only ever reads it.
+    //
+    // **`PixelFormat.Argb8888` is SDL's name for the bytes PlutoVG writes** -- B, G, R, A on a
+    // little-endian machine, premultiplied -- so nothing is converted between the two and the
+    // texture is uploaded straight out of the rasterizer's own storage.
+    val surf = plutovg.surface(WIDTH, HEIGHT).expect("a drawing surface")
+    val vg = plutovg.canvas(surf).expect("a drawing canvas")
+    val face = plutovg.font(path).expect(s"the font at ${path} opened")
 
-    val count = signal(0)
-    val offset = signal(0)
+    val tex = renderer.create_texture(PixelFormat.Argb8888, TextureAccess.Streaming,
+                                      i32(WIDTH), i32(HEIGHT)).expect("a streaming texture")
+
+    var c = pluto_canvas(vg, face, SIZE, INK)
+
+    val m = model()
     val rows = labels(n)
 
-    // The tree is rebuilt on the frame after anything it read changed, which is what makes this a
-    // measurement of a rebuild rather than of a repaint. **The dependent is held by this frame, not
-    // by the tree** -- a `&Fn()` the loop owns, so it survives every rebuild, where a handler
-    // belonging to a node would go with the node.
+    // The tree is rebuilt on the frame after anything it read changed. **The dependent is held by
+    // this frame, not by the tree** -- a `&Fn()` the loop owns, so it survives every rebuild, where a
+    // handler belonging to a node would go with the node.
     val dirty = signal(true)
     val mark: &Fn() -> unit = () -> dirty.set(true)
 
-    count.watch(mark)
-    offset.watch(mark)
+    m.count.watch(mark)
+    m.volume.watch(mark)
+    m.offset.watch(mark)
+    m.roomy.watch(mark)
+    m.night.watch(mark)
+
+    if shot
+        val tree = screen(m, rows)
+        val at = Rect(0, 0, WIDTH, HEIGHT)
+
+        // On the "increment" button, so the frame shows a hover as well as everything at rest.
+        c.point(300, 76, false)
+        surf.clear(fraction(GROUND, 16), fraction(GROUND, 8), fraction(GROUND, 0))
+        tree.measure(&c, Size(at.w, at.h))
+        tree.paint(&c, at)
+
+        if !surf.write_png("shot.png") then return Err("the screenshot could not be written")
+
+        print("wrote shot.png")
+
+        return Ok(())
 
     if bench
-        print(s"${n} rows, ${nodes(n)} boxed nodes")
+        print(s"${n} rows, ${nodes(n)} boxed nodes, ${WIDTH}x${HEIGHT}")
 
-        val (bns, ba) = build_cost(count, offset, rows, 200)
+        val (bns, ba) = build_cost(m, rows, 200)
 
-        report("rebuild        ", bns, ba, nodes(n))
+        report("rebuild            ", bns, ba, nodes(n))
 
-        val (fns, fa) = frame_cost(&c, count, offset, rows, 200)
+        val (fns, fa) = frame_cost(&c, surf, m, rows, 200)
 
-        report("rebuild + frame", fns, fa, nodes(n))
+        report("rebuild + rasterize", fns, fa, nodes(n))
 
+        val uns = upload_cost(tex, surf, 200)
+
+        print(s"upload             : ${real(uns) / 1000.0} us, ${usize(WIDTH * HEIGHT * 4) / 1024usize} KiB, ${real(uns) / 1000.0 / 16667.0 * 100.0}% of a 60 Hz frame")
         print(s"allocations ${allocs()}, frees ${frees()}, live ${allocs() - frees()}")
 
         return Ok(())
 
     renderer.set_vsync(true)
 
-    var tree = screen(count, offset, rows)
+    var tree = screen(m, rows)
     var running = true
-    var rebuilds = 0
-    var rebuild_ns = 0u64
-    var reported_at = ticks_ns()
+    var mx = 0
+    var my = 0
+    var down = false
+    var last = ticks_ns()
+    var frames = 0
+    var reported_at = last
 
     while running
-        while true
+        loop
             poll_event() match
                 Some(e) ->
-                    if e.kind() == EventKind.Quit then running = false
-                    elif e.kind() == EventKind.KeyDown && e.key_scancode() == SCANCODE_ESCAPE
-                        running = false
-                    elif e.kind() == EventKind.MouseButtonDown
-                        c.taps.tap(int(e.mouse_x()), int(e.mouse_y()))
-                    elif e.kind() == EventKind.MouseWheel
-                        val next = offset.read() - int(e.wheel_y()) * 40
+                    val kind = e.kind()
 
-                        offset.set(if next < 0 then 0 else next)
+                    if kind == EventKind.Quit then running = false
+                    elif kind == EventKind.KeyDown && e.key_scancode() == SCANCODE_ESCAPE
+                        running = false
+                    elif kind == EventKind.MouseMotion
+                        mx = int(e.mouse_x())
+                        my = int(e.mouse_y())
+                    elif kind == EventKind.MouseButtonDown
+                        mx = int(e.mouse_x())
+                        my = int(e.mouse_y())
+                        down = true
+
+                        // **The pointer is put where the click was before the hit list is
+                        // consulted**, so that a control which reads the pointer during the paint
+                        // that follows sees the press at the place it happened rather than at
+                        // wherever the mouse last moved.
+                        c.point(mx, my, true)
+                        c.taps.tap(mx, my)
+                    elif kind == EventKind.MouseButtonUp
+                        down = false
+                    elif kind == EventKind.MouseWheel
+                        val next = m.offset.read() - int(e.wheel_y()) * 40
+
+                        m.offset.set(if next < 0 then 0 else next)
                 None -> break
 
+        val now = ticks_ns()
+        var dt = real(now - last) / 1.0e9
+
+        if dt > 0.25 then dt = 0.25
+
+        last = now
+
         if dirty.read()
-            val t0 = ticks_ns()
-
-            tree = screen(count, offset, rows)
-
-            rebuild_ns += ticks_ns() - t0
-            rebuilds += 1
+            tree = screen(m, rows)
             dirty.set(false)
 
-        renderer.clear_to(rgb(18, 20, 28))
-
+        // **A frame is drawn every time round whether anything changed or not**, and that is not
+        // waste: a hover easing toward its colour is a change to the *picture* and not to the state,
+        // so a loop that only repainted after a rebuild would animate in steps of one tap.
+        c.point(mx, my, down)
+        c.tick(dt)
         c.taps.reset()
 
-        val at = Rect(0, 0, int(WIDTH), int(HEIGHT))
+        surf.clear(fraction(GROUND, 16), fraction(GROUND, 8), fraction(GROUND, 0))
+
+        val at = Rect(0, 0, WIDTH, HEIGHT)
 
         tree.measure(&c, Size(at.w, at.h))
         tree.paint(&c, at)
 
+        tex.update(as_ptr(surf.data()), i32(surf.stride()))
+        renderer.clear()
+        renderer.copy(tex)
         renderer.present()
 
-        if ticks_ns() - reported_at >= 1_000_000_000u64
-            if rebuilds > 0
-                print(s"${rebuilds} rebuilds, ${real(rebuild_ns) / real(rebuilds) / 1000.0} us each")
+        frames += 1
 
-            rebuilds = 0
-            rebuild_ns = 0u64
-            reported_at = ticks_ns()
+        if now - reported_at >= 1_000_000_000u64
+            print(s"${frames} frames a second")
+
+            frames = 0
+            reported_at = now
 
     Ok(())
 end main
