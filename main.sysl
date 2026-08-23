@@ -21,8 +21,10 @@ import sh.sysl.ui.*
 import sh.sysl.plutovg
 import sh.sysl.sdl3.{Renderer, Texture, Window, PixelFormat, TextureAccess, rgb, init,
                      create_window, poll_event, Event, EventKind, ticks_ns, error, set_hint,
-                     INIT_VIDEO, SCANCODE_ESCAPE, WINDOW_HIDDEN, KMOD_GUI, KMOD_CTRL,
-                     set_clipboard_text}
+                     INIT_VIDEO, SCANCODE_ESCAPE, WINDOW_HIDDEN, KMOD_GUI, KMOD_CTRL, KMOD_SHIFT,
+                     KMOD_ALT, SCANCODE_BACKSPACE, SCANCODE_DELETE, SCANCODE_LEFT, SCANCODE_RIGHT,
+                     SCANCODE_UP, SCANCODE_DOWN, SCANCODE_HOME, SCANCODE_END, SCANCODE_RETURN,
+                     SCANCODE_TAB, set_clipboard_text}
 import sysl.fs.is_file
 import sysl.seq.{Sequence, generate}
 import sysl.slices.as_ptr
@@ -75,12 +77,28 @@ struct Model
     sel_a: &Signal[Selection]
     sel_b: &Signal[Selection]
     sel_c: &Signal[Selection]
+
+    // The form's state. **A field's text is a signal like everything else** -- the view that types
+    // into it keeps nothing, so this is the only copy and it survives the tree being thrown away
+    // sixty times a second.
+    //
+    // **Which radio is chosen is an `int`**, and that single number is the whole of the mutual
+    // exclusion: there is no state in which two of them are on.
+    name: &Signal[string]
+    notes: &Signal[string]
+    size: &Signal[int]
+
+    // **A picture is not a signal**, because it is not state: it is loaded once and drawn into as
+    // many frames as it likes, and the `Option` is the honest report that a program run from
+    // somewhere else will not find the file beside it.
+    art: Option[&Image]
 end Model
 
 model() -> &Model =
     Model(signal(0), signal(40), signal(0), signal(true), signal(false),
           signal(0), signal(false), signal(false),
-          signal(nothing_selected()), signal(nothing_selected()), signal(nothing_selected()))
+          signal(nothing_selected()), signal(nothing_selected()), signal(nothing_selected()),
+          signal(""), signal(""), signal(1), load_image("shot.png"))
 
 // An action that adds to a signal, made once per rebuild rather than once per frame.
 private bump(s: &Signal[int], by: int) -> &Fn() -> unit = () -> s.set(s.read() + by)
@@ -177,13 +195,45 @@ screen(m: &Model, rows: [][]string) -> &View
         selectable(ABOUT_2, m.sel_b)
         selectable(ABOUT_3, m.sel_c)
 
+    // **The form is where the keyboard is**, and it is the one tab whose controls write text rather
+    // than numbers: a field, an area and a group of radios, all over signals this program owns.
+    //
+    // **Nothing here routes a key.** The window hands SDL's key and text events to the canvas, the
+    // canvas knows which field has the focus, and a field consumes the frame's keys while it paints.
+    // A press anywhere blurs, so clicking a button below the field puts the keyboard away without
+    // either of them knowing about the other.
+    // **A block cannot go inside a list literal**, so what a row holds is named first -- which is
+    // the same rule that sends a list of rows through `sysl.seq`'s `map` rather than a `for`.
+    val summary = column(spacing = 6):
+        text(s"hello, ${if m.name.read() == "" then "stranger" else m.name.read()}")
+        text(s"a ${size_name(m.size.read())} one")
+        text(s"${m.notes.read().len} bytes of notes")
+
+    val form = column(spacing = 12):
+        grid():
+            text("name").padding(4).cell(4)
+            text_field(m.name, NAME_FIELD, 260, "your name").cell(14)
+            text("").cell(6)
+
+            text("size").padding(4).cell(4)
+            radio_group(["small", "medium", "large"], m.size).cell(14)
+            text("").cell(6)
+
+            text("notes").padding(4).cell(4)
+            text_area(m.notes, NOTES_FIELD, 380, 4, "several lines, if you like").cell(14)
+            text("").cell(6)
+
+        divider()
+
+        row([picture_of(m), summary], 12)
+
     // **A tab bar is a Row of Reactive headers over a rule** -- no new view and no new drawing, which
     // is what says the pieces underneath were the right ones.
     val body = column(spacing = 12):
         text("syslUI — every control there is").padding(4)
 
-        tabs(["Controls", "Data", "About"], m.tab,
-             i -> if i == 0 then controls elif i == 1 then data else about)
+        tabs(["Controls", "Data", "Form", "About"], m.tab,
+             i -> if i == 0 then controls elif i == 1 then data elif i == 2 then form else about)
 
     // **The modal wraps the root**, because it centres in the rectangle it is given and that is the
     // window only here. The restyle is outside it so that the dialog is themed too -- an overlay
@@ -194,6 +244,51 @@ screen(m: &Model, rows: [][]string) -> &View
         .modal(m.asking, confirm(m), Some(shut))
         .restyle(_ -> look)
 end screen
+
+// Which field is which, to the keyboard. **They must differ and neither may be `NOBODY`**: two
+// fields sharing an id would take each other's keys, and the failure looks like typing into the
+// wrong box rather than like a missing argument.
+const NAME_FIELD: int = 1
+const NOTES_FIELD: int = 2
+
+// The picture, or an honest report that it is not there. `shot.png` is the screenshot this program
+// writes with `--shot`, so the demo shows a picture of itself.
+private picture_of(m: &Model) -> &View =
+    m.art match
+        Some(img) -> image_sized(img, 180, 112, Fit.Cover, 8)
+        None -> text("run --shot first, or start me beside shot.png").padding(8).panel()
+
+// SDL's key events, as the toolkit's.
+//
+// **Only the keys that mean something to an editing surface are mapped**, and everything else falls
+// through as `None` -- a shortcut is the application's business, and a field that swallowed every
+// key would be one nothing could ever tab out of. The letters are not here at all: typed text
+// arrives as a `TextInput` event, already composed, which is the only way a dead key or an input
+// method ever produces an accented character.
+private key_of(sc: i32) -> Option[Key] =
+    sc match
+        SCANCODE_BACKSPACE -> Some(Key.Backspace)
+        SCANCODE_DELETE -> Some(Key.Delete)
+        SCANCODE_LEFT -> Some(Key.Left)
+        SCANCODE_RIGHT -> Some(Key.Right)
+        SCANCODE_UP -> Some(Key.Up)
+        SCANCODE_DOWN -> Some(Key.Down)
+        SCANCODE_HOME -> Some(Key.Home)
+        SCANCODE_END -> Some(Key.End)
+        SCANCODE_RETURN -> Some(Key.Enter)
+        SCANCODE_TAB -> Some(Key.Tab)
+        _ -> None
+
+// **Alt counts as control here, because a Mac moves by word with it.** Which physical key means
+// "by word" is a platform convention rather than a fact about editing, so the mapping is the
+// application's and the toolkit is told only that a word motion was asked for.
+private by_word(mods: u16) -> bool = (mods & (KMOD_CTRL | KMOD_ALT)) != 0u16
+
+private size_name(i: int) -> string =
+    i match
+        0 -> "small"
+        1 -> "medium"
+        _ -> "large"
 
 const ABOUT_1: string = "Everything on the first tab is drawn by PlutoVG and shown by SDL3."
 const ABOUT_2: string = "The table builds only the rows in its window; 300 rows and 3000 cost the same."
@@ -372,6 +467,11 @@ main(args: []string) -> Result[unit, string]
     // as the one thing on the page that did not move.
     val daylight = args.len > 2 && args[2] == "light"
 
+    // **`--shot form` draws the form tab with the keyboard actually in a field**, which is the one
+    // thing neither a recording nor a resting frame can show: a focus ring and a caret exist only
+    // after a press has landed, so this shot takes two frames and keeps the second.
+    val formed = args.len > 2 && args[2] == "form"
+
     var n = ROWS
 
     if args.len > 2 then n = parse_int(args[2]).unwrap_or(ROWS)
@@ -417,18 +517,28 @@ main(args: []string) -> Result[unit, string]
     if shot
         m.daylight.set(daylight)
 
+        if formed
+            m.tab.set(2)
+            m.name.set("Ada")
+            m.notes.set("two lines\nof notes")
+
         val tree = screen(m, rows)
         val at = Rect(0, 0, WIDTH, HEIGHT)
-
-        // On the "increment" button, so the frame shows a hover as well as everything at rest.
-        c.point(300, 76, false)
-
         val bg = window_ground(m)
+
+        // On the "increment" button, so the frame shows a hover as well as everything at rest --
+        // or inside the name field, where a press is what takes the keyboard.
+        if formed
+            c.point(300, 107, true)
+            render(tree, &c, at)
+            c.point(300, 107, false)
+        else
+            c.point(300, 76, false)
 
         surf.clear(fraction(bg, 16), fraction(bg, 8), fraction(bg, 0))
         render(tree, &c, at)
 
-        val name = if daylight then "shot-light.png" else "shot.png"
+        val name = if formed then "shot-form.png" elif daylight then "shot-light.png" else "shot.png"
 
         if !surf.write_png(name) then return Err("the screenshot could not be written")
 
@@ -453,6 +563,10 @@ main(args: []string) -> Result[unit, string]
         print(s"allocations ${allocs()}, frees ${frees()}, live ${allocs() - frees()}")
 
         return Ok(())
+
+    // **Without this SDL sends no `TextInput` at all**, and a field would answer the arrow keys
+    // while refusing every letter. On a phone it is also what raises the on-screen keyboard.
+    window.start_text_input()
 
     renderer.set_vsync(true)
 
@@ -482,6 +596,17 @@ main(args: []string) -> Result[unit, string]
                         val picked = picked_text(m)
 
                         if picked != "" then set_clipboard_text(picked)
+                    // **Typed text arrives already composed**, which is the whole reason a field
+                    // takes a run rather than a character: a dead key, an input method and a paste
+                    // are all one `TextInput` carrying however many bytes they came to.
+                    elif kind == EventKind.TextInput
+                        c.key(typed(e.text()))
+                    elif kind == EventKind.KeyDown
+                        key_of(e.key_scancode()) match
+                            Some(k) ->
+                                c.key(Press(k, (e.key_mod() & KMOD_SHIFT) != 0u16,
+                                            by_word(e.key_mod())))
+                            None -> ()
                     elif kind == EventKind.MouseMotion
                         mx = int(e.mouse_x())
                         my = int(e.mouse_y())

@@ -11,6 +11,11 @@ theme says what that is.
 
 ![the same screen in the light theme](shot-light.png)
 
+The form tab, with the keyboard actually in a field — the focus ring and the caret exist only after
+a press has landed, so that shot takes two frames and keeps the second.
+
+![the form tab](shot-form.png)
+
 That picture is not a photograph of a window. It is `./syslui-demo --shot`, which draws one frame
 and asks PlutoVG to write its own surface out — so it is byte for byte what the window shows, and
 it is produced by the same program with no display server anywhere near it.
@@ -20,6 +25,7 @@ sysl build . --lib ../syslui
 ./syslui-demo              # a window: every control, and a scrollable table
 ./syslui-demo --shot       # no window — draws one frame and writes shot.png
 ./syslui-demo --shot light # …under the light theme, as shot-light.png
+./syslui-demo --shot form  # …the form tab with a field focused, as shot-form.png
 ./syslui-demo --bench      # no window — prints what a rebuild, a rasterize and an upload cost
 ./syslui-demo --bench 3000 # …at whatever list length you ask for
 ```
@@ -42,6 +48,33 @@ SDL3 is the presenter on both, and cairo is available on neither.
 the `stb_truetype` it vendors, so text is measured and drawn by the same library that draws
 everything else — which also means the metrics are identical on every platform, where two font
 stacks would have disagreed.
+
+## The keyboard, which is the application's to deliver
+
+syslUI routes keys and does not collect them. Three lines in the event loop is the whole of it:
+
+```
+window.start_text_input()                                    // or SDL sends no TextInput at all
+
+TextInput -> c.key(typed(e.text()))                          // already composed: a dead key, an
+                                                             // input method and a paste are one
+KeyDown   -> key_of(e.key_scancode()) match
+                 Some(k) -> c.key(Press(k, shift, by_word))
+                 None -> ()                                  // everything else is the program's
+```
+
+**The letters are not mapped and must not be.** Typed text arrives as `TextInput`, already composed
+by the platform, which is the only way an accent, a CJK composition or a paste ever reaches a field.
+`key_of` maps the dozen keys that mean something to an editing surface and answers `None` for the
+rest, so ⌘C stays this program's and Escape still closes the window.
+
+**Which physical key means "by word" is a platform convention**, so the mapping is here rather than
+in the toolkit: alt counts as control, because that is how a Mac moves by word.
+
+**Nothing in the program routes a key to a field.** The canvas knows which field has the focus, a
+field consumes the frame's keys while it paints, and `render` forgets them at the end of the frame. A
+press anywhere blurs, so clicking a button below the field puts the keyboard away without either of
+them knowing the other exists.
 
 ## What it measures
 
