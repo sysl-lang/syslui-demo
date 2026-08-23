@@ -116,7 +116,7 @@ screen(m: &Model, rows: [][]string) -> &View
         ], 8)
 
         row([
-            checkbox(m.roomy, "roomy rows"),
+            checkbox(m.roomy, "striped rows"),
             spacer().frame(40, 1),
             text("daylight").padding(2),
             switch(m.daylight, .Accent)
@@ -145,9 +145,13 @@ screen(m: &Model, rows: [][]string) -> &View
         // **The last line is a call chain broken before its dot**, which no released compiler could
         // read when this file was written. A chain of modifiers is how anything gets styled, so a
         // chain that cannot be broken is a chain that has to fit on one line.
+        // **The checkbox restyles the table rather than passing it a flag**, which is the same
+        // sentence as changing a colour: striping and rules are alternatives -- both say "this row
+        // ends here" -- so turning one off turns the other on.
         table([col("#", true), flex_col("name"), col("status"), col("value", true)],
-              rows, m.offset, 340, Some(i -> m.count.set(int(i))), m.roomy.read())
-            .panel()
+              rows, m.offset, 340, Some(i -> m.count.set(int(i))))
+            .restyle(t -> t with { table = t.table with { striped = m.roomy.read(),
+                                                          lined = !m.roomy.read() } })
 
     body.padding(12).foreground(look.ink).restyle(_ -> look)
 end screen
