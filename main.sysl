@@ -38,7 +38,6 @@ const HEIGHT: int = 660
 // list is still something a person could scroll to the end of.
 const ROWS: int = 300
 
-const INK: u32 = 0xE6E8EF
 const GROUND: u32 = 0x12141C
 const PANEL: u32 = 0x1C2030
 const NIGHT: u32 = 0x0A0C12
@@ -173,8 +172,9 @@ screen(m: &Model, rows: [][]string) -> &View
     // **The modal wraps the root**, because it centres in the rectangle it is given and that is the
     // window only here. The restyle is outside it so that the dialog is themed too -- an overlay
     // carries the theme it was raised under, which is what makes that work at all.
+    // **No `.foreground` anywhere**: text with nothing pushed over it takes the theme's ink, so a
+    // restyle at the root recolours every label including the ones inside a raised dialog.
     body.padding(12)
-        .foreground(look.ink)
         .modal(m.asking, confirm(m), Some(shut))
         .restyle(_ -> look)
 end screen
@@ -365,7 +365,7 @@ main(args: []string) -> Result[unit, string]
     val tex = renderer.create_texture(PixelFormat.Argb8888, TextureAccess.Streaming,
                                       i32(WIDTH), i32(HEIGHT)).expect("a streaming texture")
 
-    var c = pluto_canvas(vg, face, SIZE, INK)
+    var c = pluto_canvas(vg, face, SIZE)
 
     val m = model()
     val rows = labels(n)
