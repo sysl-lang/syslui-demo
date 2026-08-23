@@ -5,14 +5,21 @@ has, drawn by a software rasterizer and handed to SDL3 as one streaming texture.
 
 ![the demo](shot.png)
 
+The same frame under the other theme — one switch, and every control, label, panel, rule and
+scrollbar below it moved. Nothing in the program names a colour: a button says `.Error` and the
+theme says what that is.
+
+![the same screen in the light theme](shot-light.png)
+
 That picture is not a photograph of a window. It is `./syslui-demo --shot`, which draws one frame
 and asks PlutoVG to write its own surface out — so it is byte for byte what the window shows, and
 it is produced by the same program with no display server anywhere near it.
 
 ```
 sysl build . --lib ../syslui
-./syslui-demo              # a window: buttons, a switch, a checkbox, a slider, a scrolling list
+./syslui-demo              # a window: every control, and a scrollable table
 ./syslui-demo --shot       # no window — draws one frame and writes shot.png
+./syslui-demo --shot light # …under the light theme, as shot-light.png
 ./syslui-demo --bench      # no window — prints what a rebuild, a rasterize and an upload cost
 ./syslui-demo --bench 3000 # …at whatever list length you ask for
 ```
@@ -40,33 +47,32 @@ stacks would have disagreed.
 
 Every allocation the program makes goes through a counter — `package.hocon`'s `allocator` block
 points sysl's storage at libc's `malloc` with a `++` in front of it, so these are the program's real
-allocation traffic rather than a model of it. A frame at 900×660:
+allocation traffic rather than a model of it. A frame at 900×660, with the table:
 
-| rows | boxed nodes | rebuild | + rasterize | upload | allocations a rebuild |
-|---:|---:|---:|---:|---:|---:|
-| 30 | 92 | 2.8 µs | 4.71 ms | 65 µs | 124 |
-| 300 | 632 | 14.6 µs | 4.65 ms | 66 µs | 664 |
-| 3000 | 6032 | 126.9 µs | 5.21 ms | 64 µs | 6064 |
+| rows | rebuild | + rasterize | allocations a frame | upload |
+|---:|---:|---:|---:|---:|
+| 300 | 2.1 µs | 1.21 ms | 933 | 66 µs |
+| 3000 | 2.1 µs | 1.33 ms | 933 | 66 µs |
 
-**The rebuild is free** — linear in the node count, one allocation a node and no more, about 21 ns a
-node, and 0.76% of a 60 Hz frame at three thousand rows.
+**A table is lazy, so a rebuild costs nothing at all**: `screen()` allocates the table node and
+keeps a slice, and the rows become views during paint. That is why the rebuild does not grow with
+the list.
 
-**The frame is nearly flat in the list length**, which it was not before culling landed. Three
-hundred rows used to cost 7.74 ms against twenty rows' 4.98 ms, because every row outside the
-window was painted and then clipped away by the backend. A container now asks the canvas whether a
-child is reachable before painting it, and the three numbers above are the same to within noise.
+**And only the rows in the window are built.** Culling stops an invisible row being *painted*, but
+the row still had to exist to be culled — 300 rows meant 12,605 boxes made and thrown away every
+frame. A table's rows are all the same height, so which ones are visible is arithmetic; the numbers
+above are what that is worth, and the reason they do not move between 300 rows and 3000.
 
 **The upload is not the problem anybody expects it to be.** 2.3 MiB across to the GPU every frame is
 0.4% of the budget. Whole-surface uploads are what streaming textures are for.
 
 What is left is the rasterizer, and it is almost all **text**: the same window with no list at all
 draws in 0.51 ms. PlutoVG rasterizes each glyph's outline afresh every frame, so the next thing
-worth attacking is a glyph cache in that package, not anything in syslUI. In practice the demo holds
-a vsync-locked 120 fps.
+worth attacking is a glyph cache in that package, not anything in syslUI. The demo holds a
+vsync-locked 120 fps.
 
-**So the per-frame arena the mobile survey argued for is refused, and by a wider margin than
-before**: allocation is three parts in a thousand of a frame, and the thing next to it is four
-orders of magnitude larger.
+**So the per-frame arena the mobile survey argued for is refused**, and by a wide margin: allocation
+is a rounding error beside the drawing.
 
 ## What a person driving it costs, which the batch numbers hide
 
@@ -91,19 +97,28 @@ the one where allocation is *cheapest*.
 column(spacing = 12):
     text("syslUI — every control there is").padding(4)
 
-    divider(EDGE)
+    divider()
 
     row([
         text(s"count: ${m.count.read()}").padding(6).frame(150, 30),
         button("increment", bump(m.count, 1)),
-        button("decrement", bump(m.count, -1), 0x8A4A3Au32)
+        button("decrement", bump(m.count, -1), .Error)
     ], 10)
+
+    row([
+        button("Filled", nothing),
+        button("Outline", nothing, .Secondary, .Outline),
+        button("Dashed", nothing, .Accent, .Dashed),
+        button("Soft", nothing, .Success, .Soft),
+        button("Soft", nothing, .Warning, .Soft),
+        button("Outline", nothing, .Error, .Outline)
+    ], 8)
 
     row([
         checkbox(m.roomy, "roomy rows"),
         spacer().frame(40, 1),
-        text("night").padding(2),
-        switch(m.night)
+        text("daylight").padding(2),
+        switch(m.daylight, .Accent)
     ], 12)
 
     row([
@@ -112,18 +127,27 @@ column(spacing = 12):
         text(s"${m.volume.read()}%").padding(4)
     ], 10)
 
-    row([progress(real(m.volume.read()) / 100.0, 380), spacer()], 0)
+    row([progress(real(m.volume.read()) / 100.0, 380, .Success), spacer()], 0)
 
-    divider(EDGE)
+    divider()
 
-    scroll(column(rows.map(r -> text(r).padding(gap)), 0), m.offset, 420)
-        .background(ground, 8)
+    table([col("#", true), flex_col("name"), col("status"), col("value", true)],
+          rows, m.offset, 340, Some(i -> m.count.set(int(i))), m.roomy.read())
+        .panel()
 ```
 
-**Two of the controls change the screen rather than decorate it**, which is the point: the checkbox
-sets how much room a row gets and the switch sets what the list sits on. Each is a signal write, a
-rebuild, and a visibly different tree — a demo whose switches only moved themselves would be showing
-the animation and hiding the architecture.
+…and then `body.padding(12).foreground(look.ink).restyle(_ -> look)`, which is the whole of the
+theme switch.
+
+**No call site names a colour.** A button says `.Error`, a bar says `.Success`, the surface says
+`.panel()`, and the theme says what each of those is — which is what makes one `.restyle` at the
+root change every one of them. A hex literal here would be a colour that was still there when the
+light theme was not.
+
+**Three of the controls change the screen rather than themselves**: "daylight" restyles the whole
+tree, "roomy rows" turns the table's striping off, and tapping a table row sets the counter. Each is
+a signal write, a rebuild and a visibly different tree — a demo whose switches only moved themselves
+would be showing the animation and hiding the architecture.
 
 **The last line is a call chain broken before its dot**, which no released compiler could read when
 this was written. A chain of modifiers is how anything gets styled, so a chain that cannot be broken
@@ -131,7 +155,7 @@ is a chain that has to fit on one line.
 
 **The progress bar sits in a `Row` with a spacer** because a `Column` gives every child the column's
 whole width — which is what the dividers and the panel want and not what a bar 380 wide wants. A
-`Row` honours what a child measured to.
+`Row` honours what a child measured to, and the spacer takes the rest.
 
 The whole tree is rebuilt on every signal write — deliberately the whole tree, so the number is the
 worst case rather than what rebuilding only what read the signal would buy later. The frame is drawn

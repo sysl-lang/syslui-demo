@@ -69,8 +69,14 @@ private bump(s: &Signal[int], by: int) -> &Fn() -> unit = () -> s.set(s.read() +
 // The rows, built once and kept, so that a rebuild is priced on the tree and not on string
 // formatting. A real application's rows come out of a model and this is what standing in for one
 // looks like.
-labels(n: int) -> []string =
-    generate(usize(n), i -> s"row ${i}  --  a line of text long enough to measure")
+// The rows, as a table's cells: an id, a name, a status and a number.
+//
+// **Built once and kept**, so that a rebuild is priced on the tree and not on string formatting. A
+// real application's rows come out of a model and this is what standing in for one looks like.
+labels(n: int) -> [][]string =
+    generate(usize(n), i -> [s"${i}", s"item number ${i}",
+                             if i % 3 == 0 then "ready" elif i % 3 == 1 then "waiting" else "held",
+                             s"${(i * 37) % 991}"])
 
 // The whole screen, rebuilt from scratch every time anything changes.
 //
@@ -83,8 +89,7 @@ labels(n: int) -> []string =
 // checkbox sets how much room a row gets. Each is a signal write, a rebuild, and a visibly different
 // tree. A demo whose switches only moved themselves would be showing the animation and hiding the
 // architecture.
-screen(m: &Model, rows: []string) -> &View
-    val gap = if m.roomy.read() then 8 else 3
+screen(m: &Model, rows: [][]string) -> &View
     val look = if m.daylight.read() then light() else dark()
     val nothing: &Fn() -> unit = () -> ()
 
@@ -131,10 +136,15 @@ screen(m: &Model, rows: []string) -> &View
 
         divider()
 
+        // **A table, which is made entirely of the pieces above it** -- a column of rows inside a
+        // scroller, with the widths decided once so that the columns line up. Tapping a row sets
+        // the counter, which is the shortest way to show that the index comes back.
+        //
         // **The last line is a call chain broken before its dot**, which no released compiler could
         // read when this file was written. A chain of modifiers is how anything gets styled, so a
         // chain that cannot be broken is a chain that has to fit on one line.
-        scroll(column(rows.map(r -> text(r).padding(gap)), 0), m.offset, 380)
+        table([col("#", true), flex_col("name"), col("status"), col("value", true)],
+              rows, m.offset, 340, Some(i -> m.count.set(int(i))), m.roomy.read())
             .panel()
 
     body.padding(12).foreground(look.ink).restyle(_ -> look)
@@ -151,7 +161,10 @@ window_ground(m: &Model) -> u32 = if m.daylight.read() then 0xF7F8FA else 0x1214
 // modifiers is built inside the `Reactive`'s body during *paint* and thrown away with the frame, so
 // what the retained tree holds is the `Reactive` and the `Tappable` around it. The same is true of a
 // checkbox. Everything else is one node a wrapper.
-nodes(rows: int) -> int = 2 * rows + 46
+// **A table's row is more nodes than a label was**: four cells, each a `Text` in a padding in a row
+// with a spacer in a frame, plus the row itself and its stripe. Counted rather than estimated, as
+// the chrome above it is.
+nodes(rows: int) -> int = 26 * rows + 46
 
 // A font the machine already has, checked rather than hard-coded.
 //
@@ -181,7 +194,7 @@ end font_path
 // **Nothing is drawn and nothing is measured here**, deliberately: this is the price of the boxes
 // alone -- the allocation, the retain of every child as its parent stores it, and the release of the
 // whole graph as the previous tree goes.
-build_cost(m: &Model, rows: []string, reps: int) -> (u64, u64)
+build_cost(m: &Model, rows: [][]string, reps: int) -> (u64, u64)
     // One outside the timing, so the first build's lazily-made pieces are not charged to the loop.
     var tree = screen(m, rows)
 
@@ -203,7 +216,7 @@ end build_cost
 // **This is the number the plutovg decision rests on.** Every fill is antialiased spans computed on
 // the CPU, and the whole window is redrawn whether anything changed or not, so if software drawing
 // at this size were unaffordable it would show here and nowhere else.
-frame_cost(c: *PlutoCanvas, surf: &plutovg.Surface, m: &Model, rows: []string,
+frame_cost(c: *PlutoCanvas, surf: &plutovg.Surface, m: &Model, rows: [][]string,
            reps: int) -> (u64, u64)
     val at = Rect(0, 0, WIDTH, HEIGHT)
 
