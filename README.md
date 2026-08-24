@@ -66,8 +66,8 @@ dealt with one — which is where ⌘C, escape and the mouse wheel live, and whe
 would have been wrong for the second program that used it.
 
 **The two offscreen modes are not a frame loop**, so they still open their own window and drive a
-canvas by hand. That is why this program still names sdl3 and plutovg directly while the Android one
-names neither.
+canvas by hand — they import sdl3 and plutovg directly, and reach both *through* the driver, because
+imports are transitive as of sysl 0.0.73. This project's whole `dependencies` block is one line.
 
 ## What it measures
 

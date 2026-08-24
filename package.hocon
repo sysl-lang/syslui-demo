@@ -16,6 +16,11 @@
 package {
   name    = "syslui-demo"
   version = "0.0.1"
+
+  // **The oldest compiler this builds with, and the block below is why.** Imports became transitive
+  // in 0.0.73, so a manifest naming only the driver reaches syslUI, SDL3 and PlutoVG through it —
+  // on anything older this project stops at three unresolved module names.
+  sysl = "0.0.73"
 }
 
 // **SDL_ttf is gone and PlutoVG has taken its place**, which is a smaller program rather than a
@@ -24,18 +29,11 @@ package {
 // are therefore identical on every platform, where two font stacks would have disagreed.
 // **Nothing here is a `--lib` any more**: every repository named below is public, so this builds
 // from a fresh clone with nothing sitting beside it.
-//
-// **A dependency is not transitive, and that is a rule rather than an oversight.** Naming
-// `syslui-sdl` fetches syslUI with it and does *not* let this file `import sh.sysl.ui` -- a module
-// is importable only from the package that names it, so what a program uses it declares. All four
-// below are used directly: the toolkit for the tree, the driver for the window, and sdl3 and plutovg
-// for the two offscreen modes, which open their own window and drive a canvas by hand precisely
-// because they are not a frame loop.
+// **One coordinate, because imports are transitive as of sysl 0.0.73.** The driver brings syslUI,
+// SDL3 and PlutoVG with it, and a manifest names what a project *takes* rather than everything it can
+// see. This block was four lines and three of them said nothing the build could not work out.
 dependencies {
-  syslui     { git = "github.com/sysl-lang/syslui",     version = "0.1.0" }
   syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.1.0" }
-  sdl3       { git = "github.com/sysl-lang/sdl3",       version = "0.3.1" }
-  plutovg    { git = "github.com/sysl-lang/plutovg",    version = "0.2.1" }
 }
 
 requires {
