@@ -33,7 +33,7 @@ package {
 // SDL3 and PlutoVG with it, and a manifest names what a project *takes* rather than everything it can
 // see. This block was four lines and three of them said nothing the build could not work out.
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.4" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.5" }
 }
 
 requires {
