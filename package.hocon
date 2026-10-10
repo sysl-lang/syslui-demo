@@ -20,7 +20,7 @@ package {
   // **The oldest compiler this builds with, and the block below is why.** Imports became transitive
   // in 0.0.73, so a manifest naming only the driver reaches syslUI, SDL3 and PlutoVG through it —
   // on anything older this project stops at three unresolved module names.
-  sysl = "0.0.73"
+  sysl = "0.1.0-alpha.8"
 }
 
 // **SDL_ttf is gone and PlutoVG has taken its place**, which is a smaller program rather than a
@@ -33,7 +33,7 @@ package {
 // SDL3 and PlutoVG with it, and a manifest names what a project *takes* rather than everything it can
 // see. This block was four lines and three of them said nothing the build could not work out.
 dependencies {
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.5" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.6" }
 }
 
 requires {
