@@ -1,4 +1,4 @@
-/* The allocator `package.hocon` names, which is libc's with two counters.
+/* The allocator `sysl.hocon` names, which is libc's with two counters.
  *
  * Nothing here is clever and that is the point: replacing the pair changes who
  * is asked for storage and changes nothing about where it comes from, so the

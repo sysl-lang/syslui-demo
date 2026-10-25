@@ -71,7 +71,7 @@ imports are transitive as of sysl 0.0.73. This project's whole `dependencies` bl
 
 ## What it measures
 
-Every allocation the program makes goes through a counter — `package.hocon`'s `allocator` block
+Every allocation the program makes goes through a counter — `sysl.hocon`'s `allocator` block
 points sysl's storage at libc's `malloc` with a `++` in front of it, so these are the program's real
 allocation traffic rather than a model of it. A frame at 900×660, with the table:
 

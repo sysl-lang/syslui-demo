@@ -31,7 +31,7 @@ import sysl.seq.{Sequence, generate}
 import sysl.slices.as_ptr
 import sysl.text.parse_int
 
-// The counting allocator `package.hocon` names. Every box the program makes passes through it.
+// The counting allocator `sysl.hocon` names. Every box the program makes passes through it.
 extern "ui_allocs" allocs() -> u64
 extern "ui_frees" frees() -> u64
 
